@@ -1,0 +1,8 @@
+nidaqmx
+numpy
+scipy
+matplotlib
+pandas
+pyqtgraph
+PySide6
+pyyaml

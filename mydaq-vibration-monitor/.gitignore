@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual Environments (use conda, not venv)
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (each machine has its own)
+config/local.yaml
+
+# Data files (may be large; use cloud or Git LFS for sharing)
+data/raw/
+data/processed/
+figures/
+reports/*.pdf
+reports/*.docx
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Build
+build/
+dist/
+*.egg-info/

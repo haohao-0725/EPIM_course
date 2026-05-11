@@ -1,0 +1,38 @@
+# ============================================================
+# config.example.yaml
+# 複製此檔案為 config.yaml，依照各台電腦環境修改後使用。
+# 注意：config.yaml 不會被 commit 到 Git。
+# ============================================================
+
+acquisition:
+  # 模式選擇: "mock" (模擬) 或 "nidaq" (實機)
+  mode: mock
+  # NI myDAQ 通道 (僅在 nidaq 模式下有效)
+  device_channel: "Dev1/ai0"
+  # 取樣率 (Hz)
+  sampling_rate_hz: 10000
+  # 擷取時間 (秒)
+  duration_s: 5
+  # 電壓範圍
+  voltage_min: -10.0
+  voltage_max: 10.0
+
+mock:
+  # mock mode 下的馬達狀態: "motor_off" 或 "motor_on"
+  motor_status: "motor_off"
+  # 是否加入隨機雜訊
+  add_noise: true
+  # 雜訊振幅 (V)
+  noise_amplitude: 0.05
+
+paths:
+  raw_data_dir: "data/raw"
+  figures_dir: "figures"
+
+experiment:
+  # 操作者名稱
+  operator: "your_name"
+  # 量測條件標籤
+  condition: "motor_off"
+  # 感測器安裝方式: tape / magnet / screw
+  mounting_method: "tape"
