@@ -1,0 +1,9 @@
+nidaqmx
+numpy
+scipy
+matplotlib
+pandas
+pyqtgraph
+openpyxl
+ipykernel
+jupyter
