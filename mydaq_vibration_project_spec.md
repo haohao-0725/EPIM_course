@@ -36,6 +36,8 @@
 Python 3.11
 ```
 
+(Hao_ASCL user: 在我這台電腦上面，請使用 mini conda 建立一個新的環境，用來做為此專案的開發！)
+
 原因：
 
 - 與 `nidaqmx`、`numpy`、`scipy`、`pandas`、`pyqtgraph` 相容性穩定。

@@ -36,7 +36,7 @@ import pyqtgraph as pg
 # ─────────────────────────────────────────────
 # 確保 src 在 import path 上（開發用）
 # ─────────────────────────────────────────────
-_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
+_SRC_DIR = os.path.join(os.path.dirname(__file__), "..")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
