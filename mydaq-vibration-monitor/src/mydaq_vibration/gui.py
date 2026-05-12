@@ -123,8 +123,9 @@ class AcquisitionThread(QThread):
 # ── 頁面 1：即時監控 ───────────────────────────
 
 class LivePage(QWidget):
-    def __init__(self):
+    def __init__(self, status_callback=None):
         super().__init__()
+        self._status = status_callback or (lambda msg: None)
         self._buf_t, self._buf_v = [], []
         self._MAX = 10
         self._thread = None
@@ -243,26 +244,34 @@ class LivePage(QWidget):
             fs  = int(self.edit_fs.text())
             dur = float(self.edit_dur.text())
         except ValueError:
+            self._status("[錯誤] 取樣率或 Chunk 時間格式不正確，請輸入數字。")
             return
         self._buf_t.clear(); self._buf_v.clear()
+        mode = "mock" if self.combo_mode.currentIndex() == 0 else "nidaq"
         self._thread = AcquisitionThread(
-            "mock" if self.combo_mode.currentIndex() == 0 else "nidaq",
+            mode,
             self.edit_ch.text().strip(), fs, dur,
             "motor_on" in self.combo_motor.currentText(),
         )
         self._thread.new_data.connect(self._on_data)
-        self._thread.error_occurred.connect(lambda m: print("ERR:", m))
+        self._thread.error_occurred.connect(self._on_error)
         self._thread.start()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_save.setEnabled(False)
+        self._status(f"[Live] 擷取中 | 模式: {mode} | fs: {fs} Hz | chunk: {dur} s — 按 Stop 結束")
 
     def _stop(self):
         if self._thread:
             self._thread.stop(); self._thread.wait(); self._thread = None
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.btn_save.setEnabled(bool(self._buf_v))
+        has_data = bool(self._buf_v)
+        self.btn_save.setEnabled(has_data)
+        if has_data:
+            self._status("[停止] 擷取已停止。緩衝區有資料，可按 [Save CSV] 儲存。")
+        else:
+            self._status("[停止] 擷取已停止，無資料可儲存。")
 
     def _on_data(self, t, v):
         self._buf_t.append(t); self._buf_v.append(v)
@@ -274,18 +283,34 @@ class LivePage(QWidget):
         self.curve_t.setData(all_t, all_v)
         freqs, amps = compute_fft(all_v, fs)
         self.curve_f.setData(freqs, amps)
-        self.lbl_rms.setText(f"{compute_rms(all_v):.4f} V")
-        self.lbl_pp.setText(f"{compute_peak_to_peak(all_v):.4f} V")
-        self.lbl_dom.setText(f"{find_dominant_frequency(freqs, amps):.1f} Hz")
+        rms = compute_rms(all_v)
+        pp  = compute_peak_to_peak(all_v)
+        dom = find_dominant_frequency(freqs, amps)
+        self.lbl_rms.setText(f"{rms:.4f} V")
+        self.lbl_pp.setText(f"{pp:.4f} V")
+        self.lbl_dom.setText(f"{dom:.1f} Hz")
+        n_chunks = len(self._buf_t)
+        self._status(
+            f"[Live] RMS: {rms:.4f} V   Pp: {pp:.4f} V   "
+            f"主頻: {dom:.1f} Hz   緩衝: {n_chunks}/{self._MAX} chunks"
+        )
+
+    def _on_error(self, msg: str):
+        self._status(f"[錯誤] {msg}")
+        self._stop()
 
     def _save(self):
-        if not self._buf_v: return
+        if not self._buf_v:
+            self._status("[儲存] 沒有資料可儲存。")
+            return
         cond = self.combo_cond.currentText()
         name = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{cond}.csv"
         path, _ = QFileDialog.getSaveFileName(
             self, "Save CSV",
             os.path.join("data", "raw", cond, name), "CSV (*.csv)")
-        if not path: return
+        if not path:
+            self._status("[儲存] 已取消。")
+            return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         all_v = np.concatenate(self._buf_v)
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
@@ -295,7 +320,7 @@ class LivePage(QWidget):
             w.writerow(["time_s", "voltage_v"])
             for ti, vi in zip(all_t, all_v):
                 w.writerow([f"{ti:.6f}", f"{vi:.6f}"])
-        print(f"Saved: {path}")
+        self._status(f"[儲存完成] {os.path.basename(path)}  ({len(all_v)} 筆資料)")
 
 
 # ── 頁面 2：訊號分析 ───────────────────────────
@@ -526,7 +551,11 @@ class MainWindow(QMainWindow):
             sl.addWidget(btn)
             self._nav_btns.append(btn)
 
-            page = PageClass()
+            # LivePage 需要 status callback
+            if PageClass is LivePage:
+                page = PageClass(status_callback=self._set_status)
+            else:
+                page = PageClass()
             self.stack.addWidget(page)
             self._pages.append(page)
 
@@ -534,11 +563,14 @@ class MainWindow(QMainWindow):
         root.addWidget(sidebar)
         root.addWidget(self.stack, stretch=1)
 
-        sb = QStatusBar()
-        sb.setStyleSheet(f"background:{SIDEBAR}; color:{TEXT_DIM}; border-top:1px solid {BORDER};")
-        sb.showMessage("就緒 — 選擇左側選單開始使用")
-        self.setStatusBar(sb)
+        self._sb = QStatusBar()
+        self._sb.setStyleSheet(f"background:{SIDEBAR}; color:{TEXT_DIM}; border-top:1px solid {BORDER};")
+        self._sb.showMessage("就緒 — 請至 [即時監控] 頁面按下 Start Live View 開始擷取")
+        self.setStatusBar(self._sb)
         self._cur = 0
+
+    def _set_status(self, msg: str):
+        self._sb.showMessage(msg)
 
     def _switch(self, idx: int):
         self._nav_btns[self._cur].setObjectName("nav_btn")
