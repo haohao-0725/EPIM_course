@@ -1,570 +1,568 @@
 """
-gui.py
-
-NI myDAQ 振動監控 GUI 主程式。
-
-功能：
-  - 選擇 mock / nidaq mode
-  - 設定 channel、取樣率、duration
-  - 顯示即時波形（使用 pyqtgraph）
-  - 顯示 RMS 與 Peak-to-Peak 數值
-  - 可儲存 CSV
-
-使用方式：
-    python -m mydaq_vibration.gui
-  或：
-    python src/mydaq_vibration/gui.py
+gui.py  — NI myDAQ Vibration Monitor
+色系：信紙米白  |  側邊選單頁面切換
 """
 
-import sys
-import os
-import csv
-import time
+import sys, os, csv, time
 import numpy as np
 from datetime import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QGroupBox,
-    QFileDialog, QStatusBar, QFrame, QSizePolicy,
+    QFileDialog, QStatusBar, QStackedWidget, QSizePolicy,
+    QSpacerItem, QFrame,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QThread
-from PySide6.QtGui import QFont, QPalette, QColor
-
+from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtGui import QFont, QColor
 import pyqtgraph as pg
 
-# ─────────────────────────────────────────────
-# 確保 src 在 import path 上（開發用）
-# ─────────────────────────────────────────────
 _SRC_DIR = os.path.join(os.path.dirname(__file__), "..")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from mydaq_vibration.mock_signal import generate_mock_signal
-from mydaq_vibration.analysis import compute_rms, compute_peak_to_peak, compute_fft, find_dominant_frequency
+from mydaq_vibration.analysis import (
+    compute_rms, compute_peak_to_peak, compute_fft, find_dominant_frequency,
+    compute_time_features,
+)
+from mydaq_vibration.plotting import plot_combined
 
+# ── 色彩 ──────────────────────────────────────
+BG        = "#FAF6F0"   # 信紙米白背景
+PANEL     = "#FFF9F2"   # 面板
+SIDEBAR   = "#EDE4D8"   # 側邊欄
+BORDER    = "#D4C5A9"   # 邊框
+TEXT      = "#2C2010"   # 主要文字（深棕）
+TEXT_DIM  = "#8A7A6A"   # 次要文字
+ACCENT    = "#4A8C8C"   # 主色調（藍綠）
+ACCENT_H  = "#3A7070"   # Hover
+SUCCESS   = "#5A8A5A"   # 綠色
+DANGER    = "#A04040"   # 紅色
+GOLD      = "#8A7020"   # 金棕
 
-# ─────────────────────────────────────────────
-# 樣式設定
-# ─────────────────────────────────────────────
-
-DARK_BG      = "#0f0f1a"
-PANEL_BG     = "#1a1a2e"
-ACCENT_BLUE  = "#00d4ff"
-ACCENT_GREEN = "#00ff88"
-ACCENT_RED   = "#ff4d6d"
-ACCENT_GOLD  = "#ffd700"
-TEXT_PRIMARY = "#e0e0ff"
-TEXT_DIM     = "#8888aa"
-BORDER_COLOR = "#2a2a5a"
-
-STYLESHEET = f"""
-QMainWindow, QWidget {{
-    background-color: {DARK_BG};
-    color: {TEXT_PRIMARY};
-    font-family: 'Segoe UI', Arial, sans-serif;
-}}
+SS = f"""
+QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-family: 'Segoe UI', Arial; font-size: 13px; }}
 QGroupBox {{
-    border: 1px solid {BORDER_COLOR};
-    border-radius: 6px;
-    margin-top: 8px;
-    padding: 8px;
-    font-weight: bold;
-    color: {ACCENT_BLUE};
+    border: 1px solid {BORDER}; border-radius: 6px; margin-top: 10px;
+    padding: 10px 8px 8px 8px; color: {ACCENT}; font-weight: bold;
 }}
-QGroupBox::title {{
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
-}}
-QLabel {{
-    color: {TEXT_PRIMARY};
-}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; background: {PANEL}; }}
 QLineEdit {{
-    background-color: {PANEL_BG};
-    border: 1px solid {BORDER_COLOR};
-    border-radius: 4px;
-    padding: 4px 8px;
-    color: {TEXT_PRIMARY};
+    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;
+    padding: 5px 8px; color: {TEXT};
 }}
-QLineEdit:focus {{
-    border: 1px solid {ACCENT_BLUE};
-}}
+QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
 QComboBox {{
-    background-color: {PANEL_BG};
-    border: 1px solid {BORDER_COLOR};
-    border-radius: 4px;
-    padding: 4px 8px;
-    color: {TEXT_PRIMARY};
+    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;
+    padding: 5px 8px; color: {TEXT};
 }}
-QComboBox:focus {{
-    border: 1px solid {ACCENT_BLUE};
-}}
-QComboBox::drop-down {{
-    border: none;
-}}
+QComboBox QAbstractItemView {{ background: {PANEL}; color: {TEXT}; selection-background-color: {ACCENT}; }}
 QPushButton {{
-    background-color: {PANEL_BG};
-    border: 1px solid {BORDER_COLOR};
-    border-radius: 6px;
-    padding: 6px 16px;
-    color: {TEXT_PRIMARY};
-    font-weight: bold;
+    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px;
+    padding: 7px 16px; color: {TEXT}; font-weight: bold;
 }}
-QPushButton:hover {{
-    background-color: #252545;
-    border-color: {ACCENT_BLUE};
+QPushButton:hover {{ background: {SIDEBAR}; border-color: {ACCENT}; color: {ACCENT}; }}
+QPushButton#btn_start {{ border-color: {SUCCESS}; color: {SUCCESS}; background: #F0F7F0; }}
+QPushButton#btn_start:hover {{ background: #E0F0E0; }}
+QPushButton#btn_stop {{ border-color: {DANGER}; color: {DANGER}; background: #F7F0F0; }}
+QPushButton#btn_stop:hover {{ background: #F0E0E0; }}
+QPushButton#btn_save {{ border-color: {GOLD}; color: {GOLD}; background: #F7F5E8; }}
+QPushButton#btn_save:hover {{ background: #F0EDD8; }}
+QPushButton#nav_btn {{
+    background: transparent; border: none; border-radius: 6px;
+    padding: 12px 16px; color: {TEXT_DIM}; font-size: 14px; text-align: left;
 }}
-QPushButton:pressed {{
-    background-color: #1a1a3a;
+QPushButton#nav_btn:hover {{ background: {BORDER}; color: {TEXT}; }}
+QPushButton#nav_btn_active {{
+    background: {ACCENT}; border: none; border-radius: 6px;
+    padding: 12px 16px; color: white; font-size: 14px; text-align: left; font-weight: bold;
 }}
-QPushButton:disabled {{
-    color: {TEXT_DIM};
-    border-color: #222240;
-}}
-QPushButton#btn_start {{
-    background-color: #0a3a2a;
-    border-color: {ACCENT_GREEN};
-    color: {ACCENT_GREEN};
-}}
-QPushButton#btn_start:hover {{
-    background-color: #0d4a35;
-}}
-QPushButton#btn_stop {{
-    background-color: #3a0a15;
-    border-color: {ACCENT_RED};
-    color: {ACCENT_RED};
-}}
-QPushButton#btn_stop:hover {{
-    background-color: #4a0d1e;
-}}
-QPushButton#btn_save {{
-    background-color: #1a1a00;
-    border-color: {ACCENT_GOLD};
-    color: {ACCENT_GOLD};
-}}
-QPushButton#btn_save:hover {{
-    background-color: #252500;
-}}
-QStatusBar {{
-    background-color: {PANEL_BG};
-    color: {TEXT_DIM};
-    border-top: 1px solid {BORDER_COLOR};
-}}
+QStatusBar {{ background: {SIDEBAR}; color: {TEXT_DIM}; border-top: 1px solid {BORDER}; }}
+QLabel#stat_val {{ font-family: Consolas; font-size: 16px; font-weight: bold; }}
 """
 
-
-# ─────────────────────────────────────────────
-# 資料採集執行緒（非阻塞）
-# ─────────────────────────────────────────────
+# ── 採集執行緒 ─────────────────────────────────
 
 class AcquisitionThread(QThread):
-    """在背景執行緒中持續產生訊號資料。"""
-
-    new_data = Signal(np.ndarray, np.ndarray)  # time_array, voltage_array
+    new_data = Signal(np.ndarray, np.ndarray)
     error_occurred = Signal(str)
 
-    def __init__(
-        self,
-        mode: str,
-        channel: str,
-        sampling_rate: int,
-        chunk_duration: float,
-        motor_on: bool,
-        parent=None,
-    ):
+    def __init__(self, mode, channel, fs, chunk_dur, motor_on, parent=None):
         super().__init__(parent)
-        self.mode = mode
-        self.channel = channel
-        self.sampling_rate = sampling_rate
-        self.chunk_duration = chunk_duration
-        self.motor_on = motor_on
+        self.mode, self.channel = mode, channel
+        self.fs, self.chunk_dur, self.motor_on = fs, chunk_dur, motor_on
         self._running = False
 
     def run(self):
         self._running = True
-        chunk_count = 0
-
         if self.mode == "nidaq":
             try:
-                import nidaqmx
+                import nidaqmx  # noqa
             except ImportError:
-                self.error_occurred.emit(
-                    "找不到 nidaqmx 套件！\n請切換到 mock mode 或在此電腦安裝 NI-DAQmx。"
-                )
+                self.error_occurred.emit("找不到 nidaqmx！請切換 mock 模式。")
                 return
-
         while self._running:
             try:
                 if self.mode == "mock":
-                    t, v = generate_mock_signal(
-                        sampling_rate=self.sampling_rate,
-                        duration=self.chunk_duration,
-                        motor_on=self.motor_on,
-                        seed=None,
-                    )
+                    t, v = generate_mock_signal(self.fs, self.chunk_dur, self.motor_on)
                     self.new_data.emit(t, v)
-                    time.sleep(self.chunk_duration * 0.9)
-
-                else:  # nidaq
+                    time.sleep(self.chunk_dur * 0.9)
+                else:
                     from mydaq_vibration.acquisition import acquire_signal
-                    t, v = acquire_signal(
-                        channel=self.channel,
-                        sampling_rate=self.sampling_rate,
-                        duration=self.chunk_duration,
-                    )
+                    t, v = acquire_signal(self.channel, self.fs, self.chunk_dur)
                     self.new_data.emit(t, v)
-
             except Exception as e:
                 self.error_occurred.emit(str(e))
                 break
-
-            chunk_count += 1
 
     def stop(self):
         self._running = False
 
 
-# ─────────────────────────────────────────────
-# 主視窗
-# ─────────────────────────────────────────────
+# ── 頁面 1：即時監控 ───────────────────────────
 
-class MainWindow(QMainWindow):
-    """主視窗：NI myDAQ 振動監控 GUI。"""
-
+class LivePage(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NI myDAQ Vibration Monitor — EPIM Course")
-        self.setMinimumSize(1100, 700)
+        self._buf_t, self._buf_v = [], []
+        self._MAX = 10
+        self._thread = None
+        self._build()
 
-        self._acq_thread: AcquisitionThread | None = None
-        self._last_time: np.ndarray | None = None
-        self._last_voltage: np.ndarray | None = None
-        self._buffer_time: list[np.ndarray] = []
-        self._buffer_voltage: list[np.ndarray] = []
-        self._buffer_max_chunks = 10  # 保留最近 N 個 chunk
+    def _build(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self._build_ui()
-        self._apply_pyqtgraph_style()
+        # 左控制欄
+        ctrl = QWidget()
+        ctrl.setFixedWidth(240)
+        ctrl.setStyleSheet(f"background:{PANEL}; border-right: 1px solid {BORDER};")
+        cl = QVBoxLayout(ctrl)
+        cl.setContentsMargins(14, 16, 14, 16)
+        cl.setSpacing(12)
 
-    # ── UI 建構 ──────────────────────────────
-
-    def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root_layout = QHBoxLayout(central)
-        root_layout.setContentsMargins(10, 10, 10, 10)
-        root_layout.setSpacing(10)
-
-        # 左側：控制面板
-        control_panel = self._build_control_panel()
-        root_layout.addWidget(control_panel, stretch=0)
-
-        # 右側：圖表區
-        plot_area = self._build_plot_area()
-        root_layout.addWidget(plot_area, stretch=1)
-
-        # 狀態列
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("就緒。請選擇模式並按下 Start Live View。")
-
-    def _build_control_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setFixedWidth(260)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # ── 模式選擇 ──
-        mode_group = QGroupBox("模式設定 / Mode")
-        mode_layout = QVBoxLayout(mode_group)
-
-        mode_layout.addWidget(QLabel("擷取模式 (Mode):"))
+        # 模式
+        g1 = QGroupBox("模式 / Mode")
+        gl1 = QVBoxLayout(g1)
         self.combo_mode = QComboBox()
         self.combo_mode.addItems(["mock (模擬)", "nidaq (實機)"])
-        self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
-        mode_layout.addWidget(self.combo_mode)
-
-        mode_layout.addWidget(QLabel("馬達狀態 (Motor):"))
+        self.combo_mode.currentIndexChanged.connect(self._on_mode)
         self.combo_motor = QComboBox()
-        self.combo_motor.addItems(["motor_off (關閉)", "motor_on (啟動)"])
-        mode_layout.addWidget(self.combo_motor)
+        self.combo_motor.addItems(["motor_off", "motor_on"])
+        gl1.addWidget(QLabel("擷取模式")); gl1.addWidget(self.combo_mode)
+        gl1.addWidget(QLabel("馬達狀態")); gl1.addWidget(self.combo_motor)
+        cl.addWidget(g1)
 
-        layout.addWidget(mode_group)
+        # 參數
+        g2 = QGroupBox("採集參數")
+        gl2 = QVBoxLayout(g2)
+        self.edit_ch  = QLineEdit("Dev1/ai0"); self.edit_ch.setEnabled(False)
+        self.edit_fs  = QLineEdit("10000")
+        self.edit_dur = QLineEdit("1.0")
+        gl2.addWidget(QLabel("通道 (Channel)")); gl2.addWidget(self.edit_ch)
+        gl2.addWidget(QLabel("取樣率 (Hz)"));   gl2.addWidget(self.edit_fs)
+        gl2.addWidget(QLabel("Chunk 時間 (s)")); gl2.addWidget(self.edit_dur)
+        cl.addWidget(g2)
 
-        # ── 參數設定 ──
-        param_group = QGroupBox("採集參數 / Parameters")
-        param_layout = QVBoxLayout(param_group)
+        # 條件
+        g3 = QGroupBox("實驗條件")
+        gl3 = QVBoxLayout(g3)
+        self.combo_cond = QComboBox()
+        self.combo_cond.addItems(["motor_off","motor_on","background_noise","installation_test"])
+        gl3.addWidget(self.combo_cond)
+        cl.addWidget(g3)
 
-        param_layout.addWidget(QLabel("通道 (Channel):"))
-        self.edit_channel = QLineEdit("Dev1/ai0")
-        self.edit_channel.setEnabled(False)  # mock 模式下禁用
-        param_layout.addWidget(self.edit_channel)
+        # 按鈕
+        g4 = QGroupBox("控制")
+        gl4 = QVBoxLayout(g4)
+        self.btn_start = QPushButton("▶  Start Live View"); self.btn_start.setObjectName("btn_start")
+        self.btn_stop  = QPushButton("■  Stop");            self.btn_stop.setObjectName("btn_stop")
+        self.btn_save  = QPushButton("  Save CSV");         self.btn_save.setObjectName("btn_save")
+        self.btn_stop.setEnabled(False); self.btn_save.setEnabled(False)
+        self.btn_start.clicked.connect(self._start)
+        self.btn_stop.clicked.connect(self._stop)
+        self.btn_save.clicked.connect(self._save)
+        for b in [self.btn_start, self.btn_stop, self.btn_save]:
+            gl4.addWidget(b)
+        cl.addWidget(g4)
 
-        param_layout.addWidget(QLabel("取樣率 (Sampling Rate, Hz):"))
-        self.edit_fs = QLineEdit("10000")
-        param_layout.addWidget(self.edit_fs)
+        # 統計
+        g5 = QGroupBox("即時統計")
+        gl5 = QVBoxLayout(g5)
+        self.lbl_rms  = self._stat_row(gl5, "RMS",          SUCCESS)
+        self.lbl_pp   = self._stat_row(gl5, "Peak-to-Peak", ACCENT)
+        self.lbl_dom  = self._stat_row(gl5, "Dominant Freq", GOLD)
+        cl.addWidget(g5)
+        cl.addStretch()
+        root.addWidget(ctrl)
 
-        param_layout.addWidget(QLabel("每次擷取時間 (Chunk, s):"))
-        self.edit_duration = QLineEdit("1.0")
-        param_layout.addWidget(self.edit_duration)
+        # 右側圖表
+        pg.setConfigOption("background", PANEL)
+        pg.setConfigOption("foreground", TEXT)
+        plots = QWidget()
+        pl = QVBoxLayout(plots)
+        pl.setContentsMargins(16, 16, 16, 16)
+        pl.setSpacing(12)
 
-        layout.addWidget(param_group)
+        self.plot_t = pg.PlotWidget(title="Time Domain")
+        self.plot_t.setLabel("left", "Voltage", units="V")
+        self.plot_t.setLabel("bottom", "Time", units="s")
+        self.plot_t.showGrid(x=True, y=True, alpha=0.4)
+        self.plot_t.getPlotItem().titleLabel.setText("Time Domain",
+            color=TEXT, size="13pt")
+        self.curve_t = self.plot_t.plot(pen=pg.mkPen(ACCENT, width=1.5))
+        pl.addWidget(self.plot_t)
 
-        # ── 實驗標籤 ──
-        label_group = QGroupBox("實驗標籤 / Condition")
-        label_layout = QVBoxLayout(label_group)
+        self.plot_f = pg.PlotWidget(title="FFT Spectrum")
+        self.plot_f.setLabel("left", "Amplitude", units="V")
+        self.plot_f.setLabel("bottom", "Frequency", units="Hz")
+        self.plot_f.setXRange(0, 500)
+        self.plot_f.showGrid(x=True, y=True, alpha=0.4)
+        self.curve_f = self.plot_f.plot(pen=pg.mkPen(DANGER, width=1.5),
+                                        fillLevel=0, brush=pg.mkBrush(DANGER + "30"))
+        pl.addWidget(self.plot_f)
+        root.addWidget(plots, stretch=1)
 
-        label_layout.addWidget(QLabel("量測條件:"))
-        self.combo_condition = QComboBox()
-        self.combo_condition.addItems([
-            "motor_off",
-            "motor_on",
-            "background_noise",
-            "installation_test",
-        ])
-        label_layout.addWidget(self.combo_condition)
-
-        layout.addWidget(label_group)
-
-        # ── 按鈕 ──
-        btn_group = QGroupBox("控制 / Control")
-        btn_layout = QVBoxLayout(btn_group)
-
-        self.btn_start = QPushButton("▶  Start Live View")
-        self.btn_start.setObjectName("btn_start")
-        self.btn_start.clicked.connect(self._on_start)
-        btn_layout.addWidget(self.btn_start)
-
-        self.btn_stop = QPushButton("■  Stop")
-        self.btn_stop.setObjectName("btn_stop")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self._on_stop)
-        btn_layout.addWidget(self.btn_stop)
-
-        self.btn_save = QPushButton("💾  Save CSV")
-        self.btn_save.setObjectName("btn_save")
-        self.btn_save.setEnabled(False)
-        self.btn_save.clicked.connect(self._on_save_csv)
-        btn_layout.addWidget(self.btn_save)
-
-        layout.addWidget(btn_group)
-
-        # ── 統計數值 ──
-        stat_group = QGroupBox("即時統計 / Live Stats")
-        stat_layout = QVBoxLayout(stat_group)
-
-        self.lbl_rms_val = self._make_stat_label("-- V")
-        self._add_stat_row(stat_layout, "RMS:", self.lbl_rms_val, ACCENT_GREEN)
-
-        self.lbl_pp_val = self._make_stat_label("-- V")
-        self._add_stat_row(stat_layout, "Peak-to-Peak:", self.lbl_pp_val, ACCENT_BLUE)
-
-        self.lbl_dominant_val = self._make_stat_label("-- Hz")
-        self._add_stat_row(stat_layout, "Dominant Freq:", self.lbl_dominant_val, ACCENT_GOLD)
-
-        layout.addWidget(stat_group)
-        layout.addStretch()
-
-        return panel
-
-    def _make_stat_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setFont(QFont("Consolas", 13, QFont.Bold))
-        lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        return lbl
-
-    def _add_stat_row(self, layout: QVBoxLayout, key: str, val_label: QLabel, color: str):
+    def _stat_row(self, layout, label, color):
         row = QHBoxLayout()
-        key_lbl = QLabel(key)
-        key_lbl.setStyleSheet(f"color: {TEXT_DIM}; font-size: 10px;")
-        val_label.setStyleSheet(f"color: {color};")
-        row.addWidget(key_lbl)
-        row.addStretch()
-        row.addWidget(val_label)
+        k = QLabel(label + ":"); k.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        v = QLabel("--"); v.setObjectName("stat_val")
+        v.setStyleSheet(f"color:{color}; font-family:Consolas; font-size:15px; font-weight:bold;")
+        v.setAlignment(Qt.AlignRight)
+        row.addWidget(k); row.addStretch(); row.addWidget(v)
         layout.addLayout(row)
+        return v
 
-    def _build_plot_area(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+    def _on_mode(self, idx):
+        self.edit_ch.setEnabled(idx == 1)
 
-        # 時域圖
-        self.plot_time = pg.PlotWidget(title="Time Domain — Voltage (V)")
-        self.plot_time.setLabel("left", "Voltage", units="V")
-        self.plot_time.setLabel("bottom", "Time", units="s")
-        self.curve_time = self.plot_time.plot(pen=pg.mkPen(color="#00d4ff", width=1))
-        layout.addWidget(self.plot_time, stretch=1)
-
-        # FFT 圖
-        self.plot_fft = pg.PlotWidget(title="FFT Spectrum — Amplitude (V)")
-        self.plot_fft.setLabel("left", "Amplitude", units="V")
-        self.plot_fft.setLabel("bottom", "Frequency", units="Hz")
-        self.plot_fft.setXRange(0, 500)
-        self.curve_fft = self.plot_fft.plot(pen=pg.mkPen(color="#ff6b6b", width=1))
-        layout.addWidget(self.plot_fft, stretch=1)
-
-        return widget
-
-    def _apply_pyqtgraph_style(self):
-        pg.setConfigOption("background", PANEL_BG)
-        pg.setConfigOption("foreground", TEXT_PRIMARY)
-
-        for plot in [self.plot_time, self.plot_fft]:
-            plot.getPlotItem().getAxis("left").setPen(pg.mkPen(color=BORDER_COLOR))
-            plot.getPlotItem().getAxis("bottom").setPen(pg.mkPen(color=BORDER_COLOR))
-            plot.showGrid(x=True, y=True, alpha=0.3)
-
-    # ── 事件處理 ──────────────────────────────
-
-    def _on_mode_changed(self, index: int):
-        is_nidaq = (index == 1)
-        self.edit_channel.setEnabled(is_nidaq)
-        if is_nidaq:
-            self.status_bar.showMessage("nidaq 模式：請確認 NI myDAQ 已連接並在 NI MAX 中可見。")
-        else:
-            self.status_bar.showMessage("mock 模式：使用模擬訊號，無需硬體。")
-
-    def _on_start(self):
-        mode = "mock" if self.combo_mode.currentIndex() == 0 else "nidaq"
-        motor_on = "motor_on" in self.combo_motor.currentText()
-        channel = self.edit_channel.text().strip()
-
+    def _start(self):
         try:
-            fs = int(self.edit_fs.text())
-            duration = float(self.edit_duration.text())
+            fs  = int(self.edit_fs.text())
+            dur = float(self.edit_dur.text())
         except ValueError:
-            self.status_bar.showMessage("❌ 取樣率或 chunk 時間格式錯誤，請輸入數字。")
             return
-
-        # 清除緩衝
-        self._buffer_time.clear()
-        self._buffer_voltage.clear()
-
-        # 建立採集執行緒
-        self._acq_thread = AcquisitionThread(
-            mode=mode,
-            channel=channel,
-            sampling_rate=fs,
-            chunk_duration=duration,
-            motor_on=motor_on,
+        self._buf_t.clear(); self._buf_v.clear()
+        self._thread = AcquisitionThread(
+            "mock" if self.combo_mode.currentIndex() == 0 else "nidaq",
+            self.edit_ch.text().strip(), fs, dur,
+            "motor_on" in self.combo_motor.currentText(),
         )
-        self._acq_thread.new_data.connect(self._on_new_data)
-        self._acq_thread.error_occurred.connect(self._on_error)
-        self._acq_thread.start()
-
+        self._thread.new_data.connect(self._on_data)
+        self._thread.error_occurred.connect(lambda m: print("ERR:", m))
+        self._thread.start()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_save.setEnabled(False)
-        self.status_bar.showMessage(f"✅ Live view 已啟動 | 模式: {mode} | fs: {fs} Hz | chunk: {duration} s")
 
-    def _on_stop(self):
-        if self._acq_thread:
-            self._acq_thread.stop()
-            self._acq_thread.wait()
-            self._acq_thread = None
-
+    def _stop(self):
+        if self._thread:
+            self._thread.stop(); self._thread.wait(); self._thread = None
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.btn_save.setEnabled(bool(self._buf_v))
 
-        # 有資料才允許儲存
-        if self._buffer_voltage:
-            self.btn_save.setEnabled(True)
-            self.status_bar.showMessage("⏹ 已停止。可按 Save CSV 儲存當前緩衝資料。")
-        else:
-            self.status_bar.showMessage("⏹ 已停止。無資料可儲存。")
-
-    def _on_new_data(self, time_array: np.ndarray, voltage_array: np.ndarray):
-        """接收新資料，更新圖表與統計數值。"""
-        self._last_time = time_array
-        self._last_voltage = voltage_array
-
-        # 存入緩衝（保留最近 N 個 chunk）
-        self._buffer_time.append(time_array)
-        self._buffer_voltage.append(voltage_array)
-        if len(self._buffer_time) > self._buffer_max_chunks:
-            self._buffer_time.pop(0)
-            self._buffer_voltage.pop(0)
-
-        # 合併最近資料顯示
-        all_v = np.concatenate(self._buffer_voltage)
-        n_total = len(all_v)
+    def _on_data(self, t, v):
+        self._buf_t.append(t); self._buf_v.append(v)
+        if len(self._buf_t) > self._MAX:
+            self._buf_t.pop(0); self._buf_v.pop(0)
+        all_v = np.concatenate(self._buf_v)
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
-        all_t = np.linspace(0, n_total / fs, n_total, endpoint=False)
-
-        # 更新時域圖
-        self.curve_time.setData(all_t, all_v)
-
-        # 計算 FFT
+        all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
+        self.curve_t.setData(all_t, all_v)
         freqs, amps = compute_fft(all_v, fs)
-        self.curve_fft.setData(freqs, amps)
+        self.curve_f.setData(freqs, amps)
+        self.lbl_rms.setText(f"{compute_rms(all_v):.4f} V")
+        self.lbl_pp.setText(f"{compute_peak_to_peak(all_v):.4f} V")
+        self.lbl_dom.setText(f"{find_dominant_frequency(freqs, amps):.1f} Hz")
 
-        # 更新統計
-        rms = compute_rms(all_v)
-        pp = compute_peak_to_peak(all_v)
-        dominant = find_dominant_frequency(freqs, amps)
-
-        self.lbl_rms_val.setText(f"{rms:.4f} V")
-        self.lbl_pp_val.setText(f"{pp:.4f} V")
-        self.lbl_dominant_val.setText(f"{dominant:.1f} Hz")
-
-    def _on_error(self, msg: str):
-        self.status_bar.showMessage(f"❌ 錯誤：{msg}")
-        self._on_stop()
-
-    def _on_save_csv(self):
-        if not self._buffer_voltage:
-            self.status_bar.showMessage("❌ 沒有資料可儲存。")
-            return
-
-        condition = self.combo_condition.currentText()
-        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"{now_str}_{condition}.csv"
-
-        filepath, _ = QFileDialog.getSaveFileName(
-            self,
-            "儲存 CSV",
-            os.path.join("data", "raw", condition, default_name),
-            "CSV Files (*.csv)",
-        )
-        if not filepath:
-            return
-
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-        all_v = np.concatenate(self._buffer_voltage)
+    def _save(self):
+        if not self._buf_v: return
+        cond = self.combo_cond.currentText()
+        name = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{cond}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save CSV",
+            os.path.join("data", "raw", cond, name), "CSV (*.csv)")
+        if not path: return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        all_v = np.concatenate(self._buf_v)
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
-        all_t = np.linspace(0, len(all_v) / fs, len(all_v), endpoint=False)
+        all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["time_s", "voltage_v"])
+            for ti, vi in zip(all_t, all_v):
+                w.writerow([f"{ti:.6f}", f"{vi:.6f}"])
+        print(f"Saved: {path}")
 
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["time_s", "voltage_v"])
-            for t, v in zip(all_t, all_v):
-                writer.writerow([f"{t:.6f}", f"{v:.6f}"])
 
-        self.status_bar.showMessage(f"✅ 資料已儲存：{filepath} ({len(all_v)} 筆)")
+# ── 頁面 2：訊號分析 ───────────────────────────
+
+class AnalysisPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
+
+        title = QLabel("訊號分析 / Signal Analysis")
+        title.setStyleSheet(f"font-size:20px; font-weight:bold; color:{ACCENT}; padding-bottom:4px;")
+        root.addWidget(title)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"color:{BORDER};"); root.addWidget(sep)
+
+        # 檔案選取
+        file_grp = QGroupBox("選擇 CSV 檔案")
+        fl = QHBoxLayout(file_grp)
+        self.edit_file = QLineEdit(); self.edit_file.setPlaceholderText("點擊右側按鈕選擇 CSV...")
+        self.edit_file.setReadOnly(True)
+        btn_browse = QPushButton("瀏覽...")
+        btn_browse.setFixedWidth(90)
+        btn_browse.clicked.connect(self._browse)
+        fl.addWidget(self.edit_file); fl.addWidget(btn_browse)
+        root.addWidget(file_grp)
+
+        # 參數
+        param_grp = QGroupBox("分析參數")
+        pl = QHBoxLayout(param_grp)
+        pl.addWidget(QLabel("取樣率 (Hz):"))
+        self.edit_fs = QLineEdit("10000"); self.edit_fs.setFixedWidth(100)
+        pl.addWidget(self.edit_fs)
+        pl.addWidget(QLabel("   FFT 最大頻率 (Hz):"))
+        self.edit_maxf = QLineEdit("500"); self.edit_maxf.setFixedWidth(100)
+        pl.addWidget(self.edit_maxf)
+        pl.addStretch()
+        root.addWidget(param_grp)
+
+        # 執行按鈕
+        btn_run = QPushButton("  執行分析並顯示圖表")
+        btn_run.setFixedHeight(40)
+        btn_run.setStyleSheet(
+            f"QPushButton{{background:{ACCENT};color:white;border:none;border-radius:6px;font-size:14px;font-weight:bold;}}"
+            f"QPushButton:hover{{background:{ACCENT_H};}}"
+        )
+        btn_run.clicked.connect(self._run)
+        root.addWidget(btn_run)
+
+        # 統計結果
+        res_grp = QGroupBox("統計結果")
+        rl = QVBoxLayout(res_grp)
+        self._res_labels = {}
+        fields = [("Mean (V)", TEXT), ("RMS (V)", SUCCESS),
+                  ("Peak-to-Peak (V)", ACCENT), ("Peak (V)", GOLD),
+                  ("Crest Factor", TEXT_DIM), ("Dominant Freq (Hz)", DANGER)]
+        for label, color in fields:
+            row = QHBoxLayout()
+            k = QLabel(label + ":"); k.setFixedWidth(200)
+            k.setStyleSheet(f"color:{TEXT_DIM};")
+            v = QLabel("--")
+            v.setStyleSheet(f"font-family:Consolas; font-size:15px; font-weight:bold; color:{color};")
+            row.addWidget(k); row.addWidget(v); row.addStretch()
+            rl.addLayout(row)
+            self._res_labels[label] = v
+        root.addWidget(res_grp)
+        root.addStretch()
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(self, "選擇 CSV", "data", "CSV (*.csv)")
+        if path: self.edit_file.setText(path)
+
+    def _run(self):
+        path = self.edit_file.text()
+        if not path or not os.path.exists(path):
+            return
+        import pandas as pd
+        try:
+            df = pd.read_csv(path)
+            v = df["voltage_v"].to_numpy(dtype=float)
+            fs = int(self.edit_fs.text())
+            max_f = float(self.edit_maxf.text())
+        except Exception as e:
+            print("Error:", e); return
+        feats = compute_time_features(v)
+        freqs, amps = compute_fft(v, fs)
+        dom = find_dominant_frequency(freqs, amps)
+        n = len(v)
+        t = np.linspace(0, n/fs, n, endpoint=False)
+        mapping = {
+            "Mean (V)": f"{feats['mean']:+.5f}",
+            "RMS (V)": f"{feats['rms']:.5f}",
+            "Peak-to-Peak (V)": f"{feats['peak_to_peak']:.5f}",
+            "Peak (V)": f"{feats['peak']:.5f}",
+            "Crest Factor": f"{feats['crest_factor']:.3f}",
+            "Dominant Freq (Hz)": f"{dom:.2f}",
+        }
+        for k, val in mapping.items():
+            self._res_labels[k].setText(val)
+        plot_combined(t, v, freqs, amps,
+                      title=os.path.basename(path),
+                      max_freq=max_f, dominant_freq=dom,
+                      save_path=None, show=True)
+
+
+# ── 頁面 3：設定 ───────────────────────────────
+
+class SettingsPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
+
+        title = QLabel("設定 / Settings")
+        title.setStyleSheet(f"font-size:20px; font-weight:bold; color:{ACCENT}; padding-bottom:4px;")
+        root.addWidget(title)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"color:{BORDER};"); root.addWidget(sep)
+
+        info_grp = QGroupBox("裝置資訊")
+        il = QVBoxLayout(info_grp)
+        self.lbl_device_info = QLabel("點擊「檢查 NI 裝置」來偵測連接的設備。")
+        self.lbl_device_info.setWordWrap(True)
+        self.lbl_device_info.setStyleSheet(f"color:{TEXT_DIM}; font-family:Consolas;")
+        il.addWidget(self.lbl_device_info)
+        btn_check = QPushButton("檢查 NI 裝置")
+        btn_check.clicked.connect(self._check_devices)
+        il.addWidget(btn_check)
+        root.addWidget(info_grp)
+
+        path_grp = QGroupBox("路徑設定")
+        pl = QVBoxLayout(path_grp)
+        pl.addWidget(QLabel("原始資料存放目錄："))
+        rh = QHBoxLayout()
+        self.edit_raw = QLineEdit("data/raw")
+        rh.addWidget(self.edit_raw); pl.addLayout(rh)
+        pl.addWidget(QLabel("圖片輸出目錄："))
+        fh = QHBoxLayout()
+        self.edit_fig = QLineEdit("figures")
+        fh.addWidget(self.edit_fig); pl.addLayout(fh)
+        root.addWidget(path_grp)
+
+        about_grp = QGroupBox("關於")
+        al = QVBoxLayout(about_grp)
+        about_txt = QLabel(
+            "NI myDAQ Vibration Monitor\n"
+            "EPIM Course v0.1.0\n\n"
+            "支援 mock / NI-DAQmx 雙模式\n"
+            "使用 Python 3.11 + PySide6 + pyqtgraph"
+        )
+        about_txt.setStyleSheet(f"color:{TEXT_DIM}; line-height:1.6;")
+        al.addWidget(about_txt)
+        root.addWidget(about_grp)
+        root.addStretch()
+
+    def _check_devices(self):
+        try:
+            from nidaqmx.system import System
+            devs = list(System.local().devices)
+            if devs:
+                info = "\n".join(f"  [{i+1}] {d.name}  ({d.product_type})" for i, d in enumerate(devs))
+                self.lbl_device_info.setText(f"找到 {len(devs)} 個裝置：\n{info}")
+            else:
+                self.lbl_device_info.setText("NI-DAQmx 已安裝，但未偵測到裝置。\n請確認 myDAQ 已插入 USB。")
+        except ImportError:
+            self.lbl_device_info.setText("未安裝 nidaqmx 套件。\n此電腦請使用 mock 模式。")
+        except Exception as e:
+            self.lbl_device_info.setText(f"錯誤：{e}")
+
+
+# ── 主視窗 ──────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("NI myDAQ Vibration Monitor — EPIM Course")
+        self.setMinimumSize(1100, 680)
+        self._pages = []
+        self._nav_btns = []
+        self._build()
+
+    def _build(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── 側邊導覽欄 ──
+        sidebar = QWidget()
+        sidebar.setFixedWidth(200)
+        sidebar.setStyleSheet(f"background:{SIDEBAR}; border-right:1px solid {BORDER};")
+        sl = QVBoxLayout(sidebar)
+        sl.setContentsMargins(12, 20, 12, 20)
+        sl.setSpacing(4)
+
+        logo = QLabel("Vibration\nMonitor")
+        logo.setStyleSheet(
+            f"font-size:18px; font-weight:bold; color:{ACCENT};"
+            f"padding-bottom:12px; border-bottom:1px solid {BORDER}; margin-bottom:8px;"
+        )
+        logo.setAlignment(Qt.AlignCenter)
+        sl.addWidget(logo)
+
+        nav_items = [
+            ("📡  即時監控", LivePage),
+            ("📊  訊號分析", AnalysisPage),
+            ("⚙️  設定",    SettingsPage),
+        ]
+        self.stack = QStackedWidget()
+
+        for i, (label, PageClass) in enumerate(nav_items):
+            btn = QPushButton(label)
+            btn.setObjectName("nav_btn" if i != 0 else "nav_btn_active")
+            btn.setCheckable(False)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, idx=i: self._switch(idx))
+            sl.addWidget(btn)
+            self._nav_btns.append(btn)
+
+            page = PageClass()
+            self.stack.addWidget(page)
+            self._pages.append(page)
+
+        sl.addStretch()
+        root.addWidget(sidebar)
+        root.addWidget(self.stack, stretch=1)
+
+        sb = QStatusBar()
+        sb.setStyleSheet(f"background:{SIDEBAR}; color:{TEXT_DIM}; border-top:1px solid {BORDER};")
+        sb.showMessage("就緒 — 選擇左側選單開始使用")
+        self.setStatusBar(sb)
+        self._cur = 0
+
+    def _switch(self, idx: int):
+        self._nav_btns[self._cur].setObjectName("nav_btn")
+        self._nav_btns[self._cur].setStyle(self._nav_btns[self._cur].style())
+        self._cur = idx
+        self._nav_btns[idx].setObjectName("nav_btn_active")
+        self._nav_btns[idx].setStyle(self._nav_btns[idx].style())
+        self.stack.setCurrentIndex(idx)
 
     def closeEvent(self, event):
-        if self._acq_thread:
-            self._acq_thread.stop()
-            self._acq_thread.wait()
+        live: LivePage = self._pages[0]
+        if live._thread:
+            live._thread.stop(); live._thread.wait()
         event.accept()
 
 
-# ─────────────────────────────────────────────
-# 進入點
-# ─────────────────────────────────────────────
+# ── 入口 ──────────────────────────────────────
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(SS)
     app.setApplicationName("NI myDAQ Vibration Monitor")
-
-    window = MainWindow()
-    window.show()
-
+    w = MainWindow()
+    w.show()
     sys.exit(app.exec())
 
 
