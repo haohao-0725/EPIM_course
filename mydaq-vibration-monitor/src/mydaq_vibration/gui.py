@@ -127,6 +127,7 @@ class LivePage(QWidget):
         super().__init__()
         self._status = status_callback or (lambda msg: None)
         self._buf_t, self._buf_v = [], []
+        self._total_samples = 0   # 追蹤總取樣點數
         self._MAX = 10
         self._thread = None
         self._build()
@@ -138,7 +139,7 @@ class LivePage(QWidget):
 
         # 左控制欄
         ctrl = QWidget()
-        ctrl.setFixedWidth(240)
+        ctrl.setFixedWidth(270)
         ctrl.setStyleSheet(f"background:{PANEL}; border-right: 1px solid {BORDER};")
         cl = QVBoxLayout(ctrl)
         cl.setContentsMargins(14, 16, 14, 16)
@@ -167,6 +168,30 @@ class LivePage(QWidget):
         gl2.addWidget(QLabel("Chunk 時間 (s)")); gl2.addWidget(self.edit_dur)
         cl.addWidget(g2)
 
+        # Y 軸範圍
+        g_yaxis = QGroupBox("Y 軸範圍")
+        gyl = QVBoxLayout(g_yaxis)
+        # 時域圖
+        gyl.addWidget(QLabel("時域 Voltage (V):"))
+        row_td = QHBoxLayout()
+        self.edit_td_ymin = QLineEdit("auto"); self.edit_td_ymin.setFixedWidth(70)
+        self.edit_td_ymax = QLineEdit("auto"); self.edit_td_ymax.setFixedWidth(70)
+        row_td.addWidget(QLabel("Min")); row_td.addWidget(self.edit_td_ymin)
+        row_td.addWidget(QLabel("Max")); row_td.addWidget(self.edit_td_ymax)
+        gyl.addLayout(row_td)
+        # FFT 圖
+        gyl.addWidget(QLabel("FFT Acceleration (g):"))
+        row_fft = QHBoxLayout()
+        self.edit_fft_ymin = QLineEdit("auto"); self.edit_fft_ymin.setFixedWidth(70)
+        self.edit_fft_ymax = QLineEdit("auto"); self.edit_fft_ymax.setFixedWidth(70)
+        row_fft.addWidget(QLabel("Min")); row_fft.addWidget(self.edit_fft_ymin)
+        row_fft.addWidget(QLabel("Max")); row_fft.addWidget(self.edit_fft_ymax)
+        gyl.addLayout(row_fft)
+        hint = QLabel("輸入數字固定範圍，\n輸入 auto 自動縮放")
+        hint.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        gyl.addWidget(hint)
+        cl.addWidget(g_yaxis)
+
         # 條件
         g3 = QGroupBox("實驗條件")
         gl3 = QVBoxLayout(g3)
@@ -192,9 +217,18 @@ class LivePage(QWidget):
         # 統計
         g5 = QGroupBox("即時統計")
         gl5 = QVBoxLayout(g5)
-        self.lbl_rms  = self._stat_row(gl5, "RMS",          SUCCESS)
-        self.lbl_pp   = self._stat_row(gl5, "Peak-to-Peak", ACCENT)
-        self.lbl_dom  = self._stat_row(gl5, "Dominant Freq", GOLD)
+        self.lbl_rms  = self._stat_row(gl5, "RMS (V)",        SUCCESS)
+        self.lbl_pp   = self._stat_row(gl5, "Peak-to-Peak (V)", ACCENT)
+        self.lbl_dom  = self._stat_row(gl5, "Dominant Freq",   GOLD)
+        # 已記錄時間
+        dur_row = QHBoxLayout()
+        dur_k = QLabel("已記錄:"); dur_k.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        self.lbl_recorded = QLabel("0.0 s")
+        self.lbl_recorded.setStyleSheet(
+            f"color:{TEXT}; font-family:Consolas; font-size:14px; font-weight:bold;")
+        self.lbl_recorded.setAlignment(Qt.AlignRight)
+        dur_row.addWidget(dur_k); dur_row.addStretch(); dur_row.addWidget(self.lbl_recorded)
+        gl5.addLayout(dur_row)
         cl.addWidget(g5)
         cl.addStretch()
         root.addWidget(ctrl)
@@ -216,8 +250,8 @@ class LivePage(QWidget):
         self.curve_t = self.plot_t.plot(pen=pg.mkPen(ACCENT, width=1.5))
         pl.addWidget(self.plot_t)
 
-        self.plot_f = pg.PlotWidget(title="FFT Spectrum")
-        self.plot_f.setLabel("left", "Amplitude", units="V")
+        self.plot_f = pg.PlotWidget(title="FFT Spectrum (Acceleration)")
+        self.plot_f.setLabel("left", "Amplitude", units="g")
         self.plot_f.setLabel("bottom", "Frequency", units="Hz")
         self.plot_f.setXRange(0, 500)
         self.plot_f.showGrid(x=True, y=True, alpha=0.4)
@@ -247,6 +281,8 @@ class LivePage(QWidget):
             self._status("[錯誤] 取樣率或 Chunk 時間格式不正確，請輸入數字。")
             return
         self._buf_t.clear(); self._buf_v.clear()
+        self._total_samples = 0
+        self.lbl_recorded.setText("0.0 s")
         mode = "mock" if self.combo_mode.currentIndex() == 0 else "nidaq"
         self._thread = AcquisitionThread(
             mode,
@@ -274,26 +310,71 @@ class LivePage(QWidget):
             self._status("[停止] 擷取已停止，無資料可儲存。")
 
     def _on_data(self, t, v):
+        # 累計總取樣點數（不受 buffer 限制）
+        self._total_samples += len(v)
         self._buf_t.append(t); self._buf_v.append(v)
         if len(self._buf_t) > self._MAX:
             self._buf_t.pop(0); self._buf_v.pop(0)
+
         all_v = np.concatenate(self._buf_v)
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
         all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
+
+        # ── 時域圖 ──
         self.curve_t.setData(all_t, all_v)
-        freqs, amps = compute_fft(all_v, fs)
+        self._apply_yrange(self.plot_t, self.edit_td_ymin, self.edit_td_ymax)
+
+        # ── 加速度轉換後的 FFT ──
+        # 公式：acceleration (g) = (voltage - 2.5) / 0.1
+        accel = (all_v - 2.5) / 0.1
+        freqs, amps = compute_fft(accel, fs)
         self.curve_f.setData(freqs, amps)
+        self._apply_yrange(self.plot_f, self.edit_fft_ymin, self.edit_fft_ymax)
+
+        # ── 統計 ──
         rms = compute_rms(all_v)
         pp  = compute_peak_to_peak(all_v)
         dom = find_dominant_frequency(freqs, amps)
         self.lbl_rms.setText(f"{rms:.4f} V")
         self.lbl_pp.setText(f"{pp:.4f} V")
         self.lbl_dom.setText(f"{dom:.1f} Hz")
+
+        # ── 已記錄時間 ──
+        recorded_sec = self._total_samples / fs
+        self.lbl_recorded.setText(f"{recorded_sec:.1f} s")
+
         n_chunks = len(self._buf_t)
         self._status(
             f"[Live] RMS: {rms:.4f} V   Pp: {pp:.4f} V   "
-            f"主頻: {dom:.1f} Hz   緩衝: {n_chunks}/{self._MAX} chunks"
+            f"主頻: {dom:.1f} Hz   已記錄: {recorded_sec:.1f} s   緩衝: {n_chunks}/{self._MAX} chunks"
         )
+
+    @staticmethod
+    def _apply_yrange(plot_widget, edit_min: QLineEdit, edit_max: QLineEdit):
+        """依照輸入欄位套用 Y 軸範圍；輸入 auto 則自動縮放。"""
+        txt_min = edit_min.text().strip().lower()
+        txt_max = edit_max.text().strip().lower()
+        try:
+            ymin = float(txt_min)
+        except ValueError:
+            ymin = None
+        try:
+            ymax = float(txt_max)
+        except ValueError:
+            ymax = None
+
+        if ymin is not None and ymax is not None:
+            plot_widget.setYRange(ymin, ymax, padding=0)
+        elif ymin is not None:
+            plot_widget.enableAutoRange(axis="y")
+            vb = plot_widget.getViewBox()
+            vb.setLimits(yMin=ymin)
+        elif ymax is not None:
+            plot_widget.enableAutoRange(axis="y")
+            vb = plot_widget.getViewBox()
+            vb.setLimits(yMax=ymax)
+        else:
+            plot_widget.enableAutoRange(axis="y")
 
     def _on_error(self, msg: str):
         self._status(f"[錯誤] {msg}")
