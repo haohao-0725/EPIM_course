@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QGroupBox,
     QFileDialog, QStatusBar, QStackedWidget, QSizePolicy,
-    QSpacerItem, QFrame,
+    QSpacerItem, QFrame, QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QColor
@@ -42,12 +42,12 @@ DANGER    = "#A04040"   # 紅色
 GOLD      = "#8A7020"   # 金棕
 
 SS = f"""
-QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-family: 'Segoe UI', Arial; font-size: 13px; }}
+QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-family: 'Segoe UI', Arial; font-size: 12px; }}
 QGroupBox {{
-    border: 1px solid {BORDER}; border-radius: 6px; margin-top: 10px;
-    padding: 10px 8px 8px 8px; color: {ACCENT}; font-weight: bold;
+    border: 1px solid {BORDER}; border-radius: 5px; margin-top: 8px;
+    padding: 6px 6px 5px 6px; color: {ACCENT}; font-weight: bold;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; background: {PANEL}; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 3px; background: {PANEL}; }}
 QLineEdit {{
     background: {PANEL}; border: 1px solid {BORDER}; border-radius: 4px;
     padding: 5px 8px; color: {TEXT};
@@ -59,8 +59,8 @@ QComboBox {{
 }}
 QComboBox QAbstractItemView {{ background: {PANEL}; color: {TEXT}; selection-background-color: {ACCENT}; }}
 QPushButton {{
-    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px;
-    padding: 7px 16px; color: {TEXT}; font-weight: bold;
+    background: {PANEL}; border: 1px solid {BORDER}; border-radius: 5px;
+    padding: 5px 12px; color: {TEXT}; font-weight: bold;
 }}
 QPushButton:hover {{ background: {SIDEBAR}; border-color: {ACCENT}; color: {ACCENT}; }}
 QPushButton#btn_start {{ border-color: {SUCCESS}; color: {SUCCESS}; background: #F0F7F0; }}
@@ -137,17 +137,16 @@ class LivePage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 左控制欄
-        ctrl = QWidget()
-        ctrl.setFixedWidth(270)
-        ctrl.setStyleSheet(f"background:{PANEL}; border-right: 1px solid {BORDER};")
-        cl = QVBoxLayout(ctrl)
-        cl.setContentsMargins(14, 16, 14, 16)
-        cl.setSpacing(12)
+        # 左控制欄（放入 ScrollArea，避免內容被截斷）
+        ctrl_inner = QWidget()
+        ctrl_inner.setStyleSheet(f"background:{PANEL};")
+        cl = QVBoxLayout(ctrl_inner)
+        cl.setContentsMargins(10, 10, 10, 10)
+        cl.setSpacing(6)
 
         # 模式
         g1 = QGroupBox("模式 / Mode")
-        gl1 = QVBoxLayout(g1)
+        gl1 = QVBoxLayout(g1); gl1.setSpacing(3)
         self.combo_mode = QComboBox()
         self.combo_mode.addItems(["mock (模擬)", "nidaq (實機)"])
         self.combo_mode.currentIndexChanged.connect(self._on_mode)
@@ -159,7 +158,7 @@ class LivePage(QWidget):
 
         # 參數
         g2 = QGroupBox("採集參數")
-        gl2 = QVBoxLayout(g2)
+        gl2 = QVBoxLayout(g2); gl2.setSpacing(3)
         self.edit_ch  = QLineEdit("Dev1/ai0"); self.edit_ch.setEnabled(False)
         self.edit_fs  = QLineEdit("10000")
         self.edit_dur = QLineEdit("1.0")
@@ -170,7 +169,7 @@ class LivePage(QWidget):
 
         # Y 軸範圍
         g_yaxis = QGroupBox("Y 軸範圍")
-        gyl = QVBoxLayout(g_yaxis)
+        gyl = QVBoxLayout(g_yaxis); gyl.setSpacing(3)
         # 時域圖
         gyl.addWidget(QLabel("時域 Voltage (V):"))
         row_td = QHBoxLayout()
@@ -194,7 +193,7 @@ class LivePage(QWidget):
 
         # 條件
         g3 = QGroupBox("實驗條件")
-        gl3 = QVBoxLayout(g3)
+        gl3 = QVBoxLayout(g3); gl3.setSpacing(3)
         self.combo_cond = QComboBox()
         self.combo_cond.addItems(["motor_off","motor_on","background_noise","installation_test"])
         gl3.addWidget(self.combo_cond)
@@ -202,7 +201,7 @@ class LivePage(QWidget):
 
         # 按鈕
         g4 = QGroupBox("控制")
-        gl4 = QVBoxLayout(g4)
+        gl4 = QVBoxLayout(g4); gl4.setSpacing(4)
         self.btn_start = QPushButton("▶  Start Live View"); self.btn_start.setObjectName("btn_start")
         self.btn_stop  = QPushButton("■  Stop");            self.btn_stop.setObjectName("btn_stop")
         self.btn_save  = QPushButton("  Save CSV");         self.btn_save.setObjectName("btn_save")
@@ -216,7 +215,7 @@ class LivePage(QWidget):
 
         # 統計
         g5 = QGroupBox("即時統計")
-        gl5 = QVBoxLayout(g5)
+        gl5 = QVBoxLayout(g5); gl5.setSpacing(3)
         self.lbl_rms  = self._stat_row(gl5, "RMS (V)",        SUCCESS)
         self.lbl_pp   = self._stat_row(gl5, "Peak-to-Peak (V)", ACCENT)
         self.lbl_dom  = self._stat_row(gl5, "Dominant Freq",   GOLD)
@@ -225,13 +224,25 @@ class LivePage(QWidget):
         dur_k = QLabel("已記錄:"); dur_k.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
         self.lbl_recorded = QLabel("0.0 s")
         self.lbl_recorded.setStyleSheet(
-            f"color:{TEXT}; font-family:Consolas; font-size:14px; font-weight:bold;")
+            f"color:{TEXT}; font-family:Consolas; font-size:12px; font-weight:bold;")
         self.lbl_recorded.setAlignment(Qt.AlignRight)
         dur_row.addWidget(dur_k); dur_row.addStretch(); dur_row.addWidget(self.lbl_recorded)
         gl5.addLayout(dur_row)
         cl.addWidget(g5)
         cl.addStretch()
-        root.addWidget(ctrl)
+
+        # 用 QScrollArea 包住左欄，支援捲動
+        scroll = QScrollArea()
+        scroll.setWidget(ctrl_inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(250)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; border-right: 1px solid {BORDER}; background: {PANEL}; }}"
+            f"QScrollBar:vertical {{ width: 6px; background: {SIDEBAR}; }}"
+            f"QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 3px; }}"
+        )
+        root.addWidget(scroll)
 
         # 右側圖表
         pg.setConfigOption("background", PANEL)
@@ -262,9 +273,9 @@ class LivePage(QWidget):
 
     def _stat_row(self, layout, label, color):
         row = QHBoxLayout()
-        k = QLabel(label + ":"); k.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
-        v = QLabel("--"); v.setObjectName("stat_val")
-        v.setStyleSheet(f"color:{color}; font-family:Consolas; font-size:15px; font-weight:bold;")
+        k = QLabel(label + ":"); k.setStyleSheet(f"color:{TEXT_DIM}; font-size:10px;")
+        v = QLabel("--")
+        v.setStyleSheet(f"color:{color}; font-family:Consolas; font-size:13px; font-weight:bold;")
         v.setAlignment(Qt.AlignRight)
         row.addWidget(k); row.addStretch(); row.addWidget(v)
         layout.addLayout(row)
@@ -588,7 +599,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NI myDAQ Vibration Monitor — EPIM Course")
-        self.setMinimumSize(1100, 680)
+        self.setMinimumSize(960, 600)
         self._pages = []
         self._nav_btns = []
         self._build()
