@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 scripts/analyze_csv.py
 
@@ -55,11 +56,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_csv(filepath: str) -> tuple[np.ndarray, np.ndarray]:
+def load_csv(filepath: str) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """
-    讀取 CSV 並回傳 time_array, voltage_array。
-    支援兩種格式：
+    讀取 CSV 並回傳 time_array, voltage_by_channel。
+    支援三種格式：
       - 有 time_s, voltage_v 欄位
+      - 有 time_s, *_voltage_v 多通道欄位
       - 只有 voltage_v 欄位（time 自動計算）
     """
     if not os.path.exists(filepath):
@@ -67,29 +69,42 @@ def load_csv(filepath: str) -> tuple[np.ndarray, np.ndarray]:
 
     df = pd.read_csv(filepath)
 
-    if "voltage_v" not in df.columns:
+    if "voltage_v" in df.columns:
+        voltage_by_channel = {"voltage_v": df["voltage_v"].to_numpy(dtype=float)}
+    else:
+        voltage_columns = [col for col in df.columns if col.endswith("_voltage_v")]
+        if not voltage_columns:
+            raise ValueError(
+                f"CSV 缺少 'voltage_v' 或 '*_voltage_v' 欄位。\n"
+                f"實際欄位：{list(df.columns)}"
+            )
+        voltage_by_channel = {
+            col.replace("_voltage_v", ""): df[col].to_numpy(dtype=float)
+            for col in voltage_columns
+        }
+
+    if not voltage_by_channel:
         raise ValueError(
-            f"CSV 缺少 'voltage_v' 欄位。\n"
+            f"CSV 缺少可分析的電壓欄位。\n"
             f"實際欄位：{list(df.columns)}"
         )
-
-    voltage = df["voltage_v"].to_numpy(dtype=float)
 
     if "time_s" in df.columns:
         time = df["time_s"].to_numpy(dtype=float)
     else:
         # 根據 fs 自動計算時間軸
-        time = np.arange(len(voltage))  # 暫時用索引，fs 之後再換算
+        first_voltage = next(iter(voltage_by_channel.values()))
+        time = np.arange(len(first_voltage))  # 暫時用索引，fs 之後再換算
 
-    return time, voltage
+    return time, voltage_by_channel
 
 
-def print_stats(features: dict, csv_path: str):
+def print_stats(features: dict, csv_path: str, channel_label: str):
     """在終端機印出分析結果。"""
     filename = os.path.basename(csv_path)
     print()
     print("=" * 55)
-    print(f"  分析結果：{filename}")
+    print(f"  分析結果：{filename} | {channel_label}")
     print("=" * 55)
     print(f"  Mean          : {features['mean']:+.6f} V")
     print(f"  RMS           : {features['rms']:.6f} V")
@@ -107,7 +122,7 @@ def main():
     print(f"[analyze_csv] 讀取：{args.csv_path}")
 
     try:
-        time_arr, voltage_arr = load_csv(args.csv_path)
+        time_arr, voltage_by_channel = load_csv(args.csv_path)
     except (FileNotFoundError, ValueError) as e:
         print(f"❌ {e}")
         sys.exit(1)
@@ -116,39 +131,43 @@ def main():
     if time_arr[-1] < 1e-6 or time_arr[0] == 0 and np.all(np.diff(time_arr) == 1):
         time_arr = time_arr / args.fs
 
-    n = len(voltage_arr)
+    first_voltage = next(iter(voltage_by_channel.values()))
+    n = len(first_voltage)
     print(f"   取樣點數：{n}，時間長度：{n / args.fs:.2f} s，取樣率：{args.fs} Hz")
 
-    # 計算特徵
-    features = compute_time_features(voltage_arr)
-    freqs, amps = compute_fft(voltage_arr, args.fs)
-    dominant_freq = find_dominant_frequency(freqs, amps)
-    features["dominant_freq"] = dominant_freq
-
-    print_stats(features, args.csv_path)
-
     # 決定儲存路徑
-    save_path = None
-    if args.save:
-        stem = os.path.splitext(os.path.basename(args.csv_path))[0]
-        figures_dir = os.path.join(_PROJECT_ROOT, "figures")
-        os.makedirs(figures_dir, exist_ok=True)
-        save_path = os.path.join(figures_dir, f"{stem}_analysis.png")
+    stem = os.path.splitext(os.path.basename(args.csv_path))[0]
+    figures_dir = os.path.join(_PROJECT_ROOT, "figures")
 
-    # 繪圖
-    show = not args.no_show
-    plot_combined(
-        time_arr, voltage_arr,
-        freqs, amps,
-        title=f"Analysis: {os.path.basename(args.csv_path)}",
-        max_freq=args.max_freq,
-        dominant_freq=dominant_freq,
-        save_path=save_path,
-        show=show,
-    )
+    for channel_label, voltage_arr in voltage_by_channel.items():
+        # 計算特徵
+        features = compute_time_features(voltage_arr)
+        freqs, amps = compute_fft(voltage_arr, args.fs)
+        dominant_freq = find_dominant_frequency(freqs, amps)
+        features["dominant_freq"] = dominant_freq
 
-    if save_path:
-        print(f"[OK] 圖片已儲存：{save_path}")
+        print_stats(features, args.csv_path, channel_label)
+
+        save_path = None
+        if args.save:
+            os.makedirs(figures_dir, exist_ok=True)
+            safe_label = channel_label.replace("/", "_").replace("\\", "_")
+            save_path = os.path.join(figures_dir, f"{stem}_{safe_label}_analysis.png")
+
+        # 繪圖
+        show = not args.no_show
+        plot_combined(
+            time_arr, voltage_arr,
+            freqs, amps,
+            title=f"Analysis: {os.path.basename(args.csv_path)} - {channel_label}",
+            max_freq=args.max_freq,
+            dominant_freq=dominant_freq,
+            save_path=save_path,
+            show=show,
+        )
+
+        if save_path:
+            print(f"[OK] 圖片已儲存：{save_path}")
 
 
 if __name__ == "__main__":

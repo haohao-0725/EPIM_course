@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 gui.py  — NI myDAQ Vibration Monitor
 色系：信紙米白  |  側邊選單頁面切換
@@ -22,6 +23,12 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from mydaq_vibration.mock_signal import generate_mock_signal
+from mydaq_vibration.acquisition import (
+    MultiChannelSignalReader,
+    normalize_channels,
+    sanitize_channel_label,
+    save_multi_csv,
+)
 from mydaq_vibration.analysis import (
     compute_rms, compute_peak_to_peak, compute_fft, find_dominant_frequency,
     compute_time_features,
@@ -85,12 +92,13 @@ QLabel#stat_val {{ font-family: Consolas; font-size: 16px; font-weight: bold; }}
 # ── 採集執行緒 ─────────────────────────────────
 
 class AcquisitionThread(QThread):
-    new_data = Signal(np.ndarray, np.ndarray)
+    new_data = Signal(np.ndarray, object)
     error_occurred = Signal(str)
 
-    def __init__(self, mode, channel, fs, chunk_dur, motor_on, parent=None):
+    def __init__(self, mode, channels, fs, chunk_dur, motor_on, parent=None):
         super().__init__(parent)
-        self.mode, self.channel = mode, channel
+        self.mode = mode
+        self.channels = normalize_channels(channels)
         self.fs, self.chunk_dur, self.motor_on = fs, chunk_dur, motor_on
         self._running = False
 
@@ -102,19 +110,43 @@ class AcquisitionThread(QThread):
             except ImportError:
                 self.error_occurred.emit("找不到 nidaqmx！請切換 mock 模式。")
                 return
+        try:
+            if self.mode == "mock":
+                self._run_mock()
+            else:
+                self._run_nidaq()
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+    def _run_mock(self):
+        channel_labels = [sanitize_channel_label(ch) for ch in self.channels]
         while self._running:
-            try:
-                if self.mode == "mock":
-                    t, v = generate_mock_signal(self.fs, self.chunk_dur, self.motor_on)
-                    self.new_data.emit(t, v)
-                    time.sleep(self.chunk_dur * 0.9)
-                else:
-                    from mydaq_vibration.acquisition import acquire_signal
-                    t, v = acquire_signal(self.channel, self.fs, self.chunk_dur)
-                    self.new_data.emit(t, v)
-            except Exception as e:
-                self.error_occurred.emit(str(e))
-                break
+            voltage_by_channel = {}
+            time_array = None
+            for idx, label in enumerate(channel_labels):
+                t, v = generate_mock_signal(
+                    self.fs,
+                    self.chunk_dur,
+                    self.motor_on,
+                    fundamental_hz=60.0 + idx * 8.0,
+                    noise_amplitude=0.05 + idx * 0.01,
+                )
+                time_array = t
+                voltage_by_channel[label] = v
+            self.new_data.emit(time_array, voltage_by_channel)
+            time.sleep(self.chunk_dur * 0.9)
+
+    def _run_nidaq(self):
+        with MultiChannelSignalReader(
+            self.channels,
+            sampling_rate=self.fs,
+            chunk_duration=self.chunk_dur,
+        ) as reader:
+            n_samples = int(self.fs * self.chunk_dur)
+            t = np.linspace(0, self.chunk_dur, n_samples, endpoint=False)
+            while self._running:
+                voltage_by_channel = reader.read_chunk()
+                self.new_data.emit(t, voltage_by_channel)
 
     def stop(self):
         self._running = False
@@ -126,10 +158,14 @@ class LivePage(QWidget):
     def __init__(self, status_callback=None):
         super().__init__()
         self._status = status_callback or (lambda msg: None)
-        self._buf_t, self._buf_v = [], []
+        self._buf_t = []
+        self._buf_v_by_channel = {}
+        self._channel_order = []
         self._total_samples = 0   # 追蹤總取樣點數
         self._MAX = 10
         self._thread = None
+        self.curves_t = {}
+        self.curves_f = {}
         self._build()
 
     def _build(self):
@@ -159,10 +195,10 @@ class LivePage(QWidget):
         # 參數
         g2 = QGroupBox("採集參數")
         gl2 = QVBoxLayout(g2); gl2.setSpacing(3)
-        self.edit_ch  = QLineEdit("Dev1/ai0"); self.edit_ch.setEnabled(False)
+        self.edit_ch  = QLineEdit("Dev1/ai0, Dev1/ai1"); self.edit_ch.setEnabled(False)
         self.edit_fs  = QLineEdit("10000")
         self.edit_dur = QLineEdit("1.0")
-        gl2.addWidget(QLabel("通道 (Channel)")); gl2.addWidget(self.edit_ch)
+        gl2.addWidget(QLabel("通道 (逗號分隔)")); gl2.addWidget(self.edit_ch)
         gl2.addWidget(QLabel("取樣率 (Hz)"));   gl2.addWidget(self.edit_fs)
         gl2.addWidget(QLabel("Chunk 時間 (s)")); gl2.addWidget(self.edit_dur)
         cl.addWidget(g2)
@@ -258,7 +294,7 @@ class LivePage(QWidget):
         self.plot_t.showGrid(x=True, y=True, alpha=0.4)
         self.plot_t.getPlotItem().titleLabel.setText("Time Domain",
             color=TEXT, size="13pt")
-        self.curve_t = self.plot_t.plot(pen=pg.mkPen(ACCENT, width=1.5))
+        self.plot_t.addLegend(offset=(-12, 12))
         pl.addWidget(self.plot_t)
 
         self.plot_f = pg.PlotWidget(title="FFT Spectrum (Acceleration)")
@@ -266,10 +302,10 @@ class LivePage(QWidget):
         self.plot_f.setLabel("bottom", "Frequency", units="Hz")
         self.plot_f.setXRange(0, 500)
         self.plot_f.showGrid(x=True, y=True, alpha=0.4)
-        self.curve_f = self.plot_f.plot(pen=pg.mkPen(DANGER, width=1.5),
-                                        fillLevel=0, brush=pg.mkBrush(DANGER + "30"))
+        self.plot_f.addLegend(offset=(-12, 12))
         pl.addWidget(self.plot_f)
         root.addWidget(plots, stretch=1)
+        self._reset_curves(["Dev1_ai0", "Dev1_ai1"])
 
     def _stat_row(self, layout, label, color):
         row = QHBoxLayout()
@@ -288,16 +324,20 @@ class LivePage(QWidget):
         try:
             fs  = int(self.edit_fs.text())
             dur = float(self.edit_dur.text())
+            channels = normalize_channels(self.edit_ch.text())
         except ValueError:
-            self._status("[錯誤] 取樣率或 Chunk 時間格式不正確，請輸入數字。")
+            self._status("[錯誤] 取樣率、Chunk 時間或通道格式不正確。")
             return
-        self._buf_t.clear(); self._buf_v.clear()
+        self._channel_order = [sanitize_channel_label(ch) for ch in channels]
+        self._buf_t.clear()
+        self._buf_v_by_channel = {label: [] for label in self._channel_order}
         self._total_samples = 0
         self.lbl_recorded.setText("0.0 s")
+        self._reset_curves(self._channel_order)
         mode = "mock" if self.combo_mode.currentIndex() == 0 else "nidaq"
         self._thread = AcquisitionThread(
             mode,
-            self.edit_ch.text().strip(), fs, dur,
+            channels, fs, dur,
             "motor_on" in self.combo_motor.currentText(),
         )
         self._thread.new_data.connect(self._on_data)
@@ -306,59 +346,117 @@ class LivePage(QWidget):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_save.setEnabled(False)
-        self._status(f"[Live] 擷取中 | 模式: {mode} | fs: {fs} Hz | chunk: {dur} s — 按 Stop 結束")
+        self._status(
+            f"[Live] 擷取中 | 模式: {mode} | channels: {', '.join(self._channel_order)} | "
+            f"fs: {fs} Hz | chunk: {dur} s — 按 Stop 結束"
+        )
 
     def _stop(self):
         if self._thread:
             self._thread.stop(); self._thread.wait(); self._thread = None
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        has_data = bool(self._buf_v)
+        has_data = any(self._buf_v_by_channel.values())
         self.btn_save.setEnabled(has_data)
         if has_data:
             self._status("[停止] 擷取已停止。緩衝區有資料，可按 [Save CSV] 儲存。")
         else:
             self._status("[停止] 擷取已停止，無資料可儲存。")
 
-    def _on_data(self, t, v):
+    def _on_data(self, t, voltage_by_channel):
         # 累計總取樣點數（不受 buffer 限制）
-        self._total_samples += len(v)
-        self._buf_t.append(t); self._buf_v.append(v)
+        if not voltage_by_channel:
+            return
+
+        first_voltage = next(iter(voltage_by_channel.values()))
+        self._total_samples += len(first_voltage)
+        self._buf_t.append(t)
+
+        for label, voltage in voltage_by_channel.items():
+            if label not in self._buf_v_by_channel:
+                self._buf_v_by_channel[label] = []
+                self._channel_order.append(label)
+                self._reset_curves(self._channel_order)
+            self._buf_v_by_channel[label].append(voltage)
+
         if len(self._buf_t) > self._MAX:
-            self._buf_t.pop(0); self._buf_v.pop(0)
+            self._buf_t.pop(0)
+            for chunks in self._buf_v_by_channel.values():
+                if chunks:
+                    chunks.pop(0)
 
-        all_v = np.concatenate(self._buf_v)
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
-        all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
+        stats = {}
 
-        # ── 時域圖 ──
-        self.curve_t.setData(all_t, all_v)
+        for label in self._channel_order:
+            chunks = self._buf_v_by_channel.get(label, [])
+            if not chunks:
+                continue
+            all_v = np.concatenate(chunks)
+            all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
+
+            # ── 時域圖 ──
+            self.curves_t[label].setData(all_t, all_v)
+
+            # ── 加速度轉換後的 FFT ──
+            # 公式：acceleration (g) = (voltage - 2.5) / 0.1
+            accel = (all_v - 2.5) / 0.1
+            freqs, amps = compute_fft(accel, fs)
+            self.curves_f[label].setData(freqs, amps)
+
+            rms = compute_rms(all_v)
+            pp  = compute_peak_to_peak(all_v)
+            dom = find_dominant_frequency(freqs, amps)
+            stats[label] = (rms, pp, dom)
+
         self._apply_yrange(self.plot_t, self.edit_td_ymin, self.edit_td_ymax)
-
-        # ── 加速度轉換後的 FFT ──
-        # 公式：acceleration (g) = (voltage - 2.5) / 0.1
-        accel = (all_v - 2.5) / 0.1
-        freqs, amps = compute_fft(accel, fs)
-        self.curve_f.setData(freqs, amps)
         self._apply_yrange(self.plot_f, self.edit_fft_ymin, self.edit_fft_ymax)
 
         # ── 統計 ──
-        rms = compute_rms(all_v)
-        pp  = compute_peak_to_peak(all_v)
-        dom = find_dominant_frequency(freqs, amps)
-        self.lbl_rms.setText(f"{rms:.4f} V")
-        self.lbl_pp.setText(f"{pp:.4f} V")
-        self.lbl_dom.setText(f"{dom:.1f} Hz")
+        self.lbl_rms.setText("\n".join(f"{k}: {v[0]:.4f} V" for k, v in stats.items()))
+        self.lbl_pp.setText("\n".join(f"{k}: {v[1]:.4f} V" for k, v in stats.items()))
+        self.lbl_dom.setText("\n".join(f"{k}: {v[2]:.1f} Hz" for k, v in stats.items()))
 
         # ── 已記錄時間 ──
         recorded_sec = self._total_samples / fs
         self.lbl_recorded.setText(f"{recorded_sec:.1f} s")
 
         n_chunks = len(self._buf_t)
-        self._status(
-            f"[Live] RMS: {rms:.4f} V   Pp: {pp:.4f} V   "
-            f"主頻: {dom:.1f} Hz   已記錄: {recorded_sec:.1f} s   緩衝: {n_chunks}/{self._MAX} chunks"
-        )
+        if stats:
+            first_label = next(iter(stats))
+            rms, pp, dom = stats[first_label]
+            self._status(
+                f"[Live] {first_label} RMS: {rms:.4f} V   Pp: {pp:.4f} V   "
+                f"主頻: {dom:.1f} Hz   channels: {len(stats)}   "
+                f"已記錄: {recorded_sec:.1f} s   緩衝: {n_chunks}/{self._MAX} chunks"
+            )
+
+    def _reset_curves(self, channel_labels):
+        """依照目前通道建立時域與 FFT 曲線。"""
+        palette = [ACCENT, DANGER, GOLD, SUCCESS, "#6E6AA8", "#C46A4A"]
+
+        for curve in self.curves_t.values():
+            self.plot_t.removeItem(curve)
+        for curve in self.curves_f.values():
+            self.plot_f.removeItem(curve)
+
+        for plot_widget in (self.plot_t, self.plot_f):
+            legend = plot_widget.getPlotItem().legend
+            if legend is not None:
+                legend.clear()
+
+        self.curves_t = {}
+        self.curves_f = {}
+        for idx, label in enumerate(channel_labels):
+            color = palette[idx % len(palette)]
+            self.curves_t[label] = self.plot_t.plot(
+                pen=pg.mkPen(color, width=1.5),
+                name=label,
+            )
+            self.curves_f[label] = self.plot_f.plot(
+                pen=pg.mkPen(color, width=1.5),
+                name=label,
+            )
 
     @staticmethod
     def _apply_yrange(plot_widget, edit_min: QLineEdit, edit_max: QLineEdit):
@@ -392,7 +490,7 @@ class LivePage(QWidget):
         self._stop()
 
     def _save(self):
-        if not self._buf_v:
+        if not any(self._buf_v_by_channel.values()):
             self._status("[儲存] 沒有資料可儲存。")
             return
         cond = self.combo_cond.currentText()
@@ -404,15 +502,19 @@ class LivePage(QWidget):
             self._status("[儲存] 已取消。")
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        all_v = np.concatenate(self._buf_v)
+        voltage_by_channel = {
+            label: np.concatenate(chunks)
+            for label, chunks in self._buf_v_by_channel.items()
+            if chunks
+        }
         fs = int(self.edit_fs.text()) if self.edit_fs.text().isdigit() else 10000
-        all_t = np.linspace(0, len(all_v)/fs, len(all_v), endpoint=False)
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["time_s", "voltage_v"])
-            for ti, vi in zip(all_t, all_v):
-                w.writerow([f"{ti:.6f}", f"{vi:.6f}"])
-        self._status(f"[儲存完成] {os.path.basename(path)}  ({len(all_v)} 筆資料)")
+        min_len = min(len(v) for v in voltage_by_channel.values())
+        all_t = np.linspace(0, min_len/fs, min_len, endpoint=False)
+        save_multi_csv(all_t, voltage_by_channel, path)
+        self._status(
+            f"[儲存完成] {os.path.basename(path)}  "
+            f"({len(voltage_by_channel)} channels, {min_len} 筆/通道)"
+        )
 
 
 # ── 頁面 2：訊號分析 ───────────────────────────
@@ -497,7 +599,14 @@ class AnalysisPage(QWidget):
         import pandas as pd
         try:
             df = pd.read_csv(path)
-            v = df["voltage_v"].to_numpy(dtype=float)
+            if "voltage_v" in df.columns:
+                voltage_col = "voltage_v"
+            else:
+                voltage_cols = [col for col in df.columns if col.endswith("_voltage_v")]
+                if not voltage_cols:
+                    raise ValueError("CSV 缺少 voltage_v 或 *_voltage_v 欄位。")
+                voltage_col = voltage_cols[0]
+            v = df[voltage_col].to_numpy(dtype=float)
             fs = int(self.edit_fs.text())
             max_f = float(self.edit_maxf.text())
         except Exception as e:
@@ -518,7 +627,7 @@ class AnalysisPage(QWidget):
         for k, val in mapping.items():
             self._res_labels[k].setText(val)
         plot_combined(t, v, freqs, amps,
-                      title=os.path.basename(path),
+                      title=f"{os.path.basename(path)} - {voltage_col}",
                       max_freq=max_f, dominant_freq=dom,
                       save_path=None, show=True)
 

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 scripts/acquire_once.py
 
@@ -6,9 +7,11 @@ scripts/acquire_once.py
 使用方式：
     python scripts/acquire_once.py
     python scripts/acquire_once.py --channel Dev1/ai0 --fs 10000 --duration 5 --condition motor_off
+    python scripts/acquire_once.py --channels Dev1/ai0 Dev1/ai1 --fs 10000 --duration 5
 
 參數：
     --channel    NI myDAQ 通道，例如 Dev1/ai0（預設：Dev1/ai0）
+    --channels   多個 NI myDAQ 通道，例如 Dev1/ai0 Dev1/ai1 或 Dev1/ai0 Dev2/ai0
     --fs         取樣率 Hz（預設：10000）
     --duration   擷取時間 s（預設：5）
     --condition  量測條件標籤，例如 motor_on / motor_off（預設：motor_off）
@@ -32,6 +35,12 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--channel",   default="Dev1/ai0", help="NI myDAQ 通道 (預設: Dev1/ai0)")
+    parser.add_argument(
+        "--channels",
+        nargs="+",
+        default=None,
+        help="多個 NI myDAQ 通道，例如 Dev1/ai0 Dev1/ai1；設定後會覆蓋 --channel",
+    )
     parser.add_argument("--fs",        type=int,   default=10000, help="取樣率 Hz (預設: 10000)")
     parser.add_argument("--duration",  type=float, default=5.0,   help="擷取時間 s (預設: 5.0)")
     parser.add_argument("--condition", default="motor_off",        help="量測條件標籤 (預設: motor_off)")
@@ -43,11 +52,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    channels = args.channels or [args.channel]
 
     print("=" * 55)
     print("  NI myDAQ 一次性資料擷取")
     print("=" * 55)
-    print(f"  通道    : {args.channel}")
+    print(f"  通道    : {', '.join(channels)}")
     print(f"  取樣率  : {args.fs} Hz")
     print(f"  時間    : {args.duration} s")
     print(f"  條件    : {args.condition}")
@@ -69,12 +79,18 @@ def main():
         sys.exit(1)
 
     # 執行擷取
-    from mydaq_vibration.acquisition import acquire_signal, save_csv, generate_filename
+    from mydaq_vibration.acquisition import (
+        acquire_multi_signal,
+        save_csv,
+        save_multi_csv,
+        generate_filename,
+        sanitize_channel_label,
+    )
 
     print("正在擷取資料，請稍候...")
     try:
-        time_arr, voltage_arr = acquire_signal(
-            channel=args.channel,
+        time_arr, voltage_by_channel = acquire_multi_signal(
+            channels=channels,
             sampling_rate=args.fs,
             duration=args.duration,
             voltage_min=args.vmin,
@@ -84,19 +100,24 @@ def main():
         print(f"❌ 擷取失敗：{e}")
         sys.exit(1)
 
-    print(f"✅ 擷取完成，共 {len(voltage_arr)} 筆資料。")
-    print(f"   電壓範圍：{voltage_arr.min():.4f} ~ {voltage_arr.max():.4f} V")
+    first_voltage = next(iter(voltage_by_channel.values()))
+    print(f"✅ 擷取完成，每通道約 {len(first_voltage)} 筆資料。")
+    for label, voltage_arr in voltage_by_channel.items():
+        print(f"   {label}: {voltage_arr.min():.4f} ~ {voltage_arr.max():.4f} V")
 
     # 決定輸出路徑
     filename = generate_filename(
         condition=args.condition,
-        channel=args.channel,
+        channel="_".join(sanitize_channel_label(ch) for ch in channels),
         sampling_rate=args.fs,
     )
     output_dir = args.output or os.path.join(_PROJECT_ROOT, "data", "raw", args.condition)
     filepath = os.path.join(output_dir, filename)
 
-    save_csv(time_arr, voltage_arr, filepath)
+    if len(voltage_by_channel) == 1:
+        save_csv(time_arr, first_voltage, filepath)
+    else:
+        save_multi_csv(time_arr, voltage_by_channel, filepath)
 
     print()
     print(f"✅ 完成！檔案路徑：{filepath}")

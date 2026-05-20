@@ -11,6 +11,7 @@
 |------|------|
 | Mock mode | 不需硬體，用模擬訊號開發與測試 |
 | NI myDAQ mode | 從 `Dev1/ai0` 讀取真實振動訊號 |
+| 多通道同步擷取 | 支援 GUI / CLI 同時擷取 `Dev1/ai0, Dev1/ai1`；跨兩台 myDAQ 時為軟體近似同步 |
 | 即時波形 GUI | 顯示時域訊號與 FFT 頻譜 |
 | 訊號分析 | RMS、Peak-to-Peak、主頻 |
 | CSV 儲存 | 保留原始電壓資料 |
@@ -177,13 +178,33 @@ python scripts/check_device.py
 python scripts/acquire_once.py --channel Dev1/ai0 --fs 10000 --duration 5 --condition motor_on
 ```
 
+### 同時擷取兩個通道
+
+建議優先使用同一台 myDAQ 的 `ai0` 與 `ai1`，兩個通道會放在同一個 NI-DAQmx task：
+
+```bash
+python scripts/acquire_once.py --channels Dev1/ai0 Dev1/ai1 --fs 10000 --duration 5 --condition motor_on
+```
+
+若測試時分別使用兩台 myDAQ，也可以指定不同裝置名稱：
+
+```bash
+python scripts/acquire_once.py --channels Dev1/ai0 Dev2/ai0 --fs 10000 --duration 5 --condition motor_on
+```
+
+注意：跨兩台 USB myDAQ 時屬於軟體近似同步，不保證 sample-level 硬體時鐘同步。
+
 ### 使用 GUI 實機擷取
 
 ```bash
 python scripts/live_view.py
 ```
 
-GUI 中選擇 `nidaq (實機)` 模式，填入正確的 Channel（如 `Dev1/ai0`）。
+GUI 中選擇 `nidaq (實機)` 模式，填入正確的 Channel。多通道可用逗號分隔，例如：
+
+```text
+Dev1/ai0, Dev1/ai1
+```
 
 ---
 

@@ -7,8 +7,14 @@
 acquisition:
   # 模式選擇: "mock" (模擬) 或 "nidaq" (實機)
   mode: mock
-  # NI myDAQ 通道 (僅在 nidaq 模式下有效)
+  # NI myDAQ 單一通道（舊版相容；僅在 nidaq 模式下有效）
   device_channel: "Dev1/ai0"
+  # NI myDAQ 多通道（GUI 與新版 acquire_once.py 可使用）
+  # 同一台 myDAQ 的 ai0 / ai1 會放在同一個 DAQmx task。
+  # 若填入 Dev1/ai0 與 Dev2/ai0，會以軟體近似同步方式擷取。
+  device_channels:
+    - "Dev1/ai0"
+    - "Dev1/ai1"
   # 取樣率 (Hz)
   sampling_rate_hz: 10000
   # 擷取時間 (秒)
