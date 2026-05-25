@@ -7,11 +7,12 @@ scripts/analyze_csv.py
 使用方式：
     python scripts/analyze_csv.py <csv_path>
     python scripts/analyze_csv.py data/raw/motor_on/signal.csv
-    python scripts/analyze_csv.py data/raw/motor_on/signal.csv --fs 10000 --max-freq 500 --save
+    python scripts/analyze_csv.py data/raw/motor_on/signal.csv --fs 10000 --min-freq 0 --max-freq 500 --save
 
 參數：
     csv_path         CSV 檔案路徑（必填）
     --fs             取樣率 Hz（若 CSV 無此資訊，預設 10000）
+    --min-freq       FFT 圖最小顯示頻率（預設 0 Hz）
     --max-freq       FFT 圖最大顯示頻率（預設 500 Hz）
     --save           是否儲存圖片到 figures/ 資料夾
     --no-show        不開啟圖形視窗（通常與 --save 搭配使用）
@@ -50,6 +51,7 @@ def parse_args():
     )
     parser.add_argument("csv_path", help="CSV 檔案路徑")
     parser.add_argument("--fs",       type=int,   default=10000, help="取樣率 Hz（預設：10000）")
+    parser.add_argument("--min-freq", type=float, default=0.0,   help="FFT 顯示最小頻率（預設：0 Hz）")
     parser.add_argument("--max-freq", type=float, default=500.0, help="FFT 顯示最大頻率（預設：500 Hz）")
     parser.add_argument("--save",     action="store_true",        help="儲存圖片到 figures/ 資料夾")
     parser.add_argument("--no-show",  action="store_true",        help="不開啟圖形視窗")
@@ -118,6 +120,9 @@ def print_stats(features: dict, csv_path: str, channel_label: str):
 
 def main():
     args = parse_args()
+    if args.min_freq >= args.max_freq:
+        print("❌ --min-freq 必須小於 --max-freq")
+        sys.exit(1)
 
     print(f"[analyze_csv] 讀取：{args.csv_path}")
 
@@ -160,6 +165,7 @@ def main():
             time_arr, voltage_arr,
             freqs, amps,
             title=f"Analysis: {os.path.basename(args.csv_path)} - {channel_label}",
+            min_freq=args.min_freq,
             max_freq=args.max_freq,
             dominant_freq=dominant_freq,
             save_path=save_path,

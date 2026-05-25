@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 plotting.py
 
@@ -97,6 +98,7 @@ def plot_fft(
     freqs: np.ndarray,
     amplitudes: np.ndarray,
     title: str = "FFT Spectrum",
+    min_freq: float | None = None,
     max_freq: float | None = None,
     dominant_freq: float | None = None,
     save_path: str | None = None,
@@ -116,6 +118,8 @@ def plot_fft(
         圖表標題。
     max_freq : float or None
         顯示的最大頻率 (Hz)，None 表示顯示全部。
+    min_freq : float or None
+        顯示的最小頻率 (Hz)，None 表示從最低頻率開始。
     dominant_freq : float or None
         若提供，在圖上標記主頻。
     save_path : str or None
@@ -135,18 +139,22 @@ def plot_fft(
         else:
             fig = ax.get_figure()
 
+        mask = np.ones_like(freqs, dtype=bool)
+        if min_freq is not None:
+            mask &= freqs >= min_freq
         if max_freq is not None:
-            mask = freqs <= max_freq
-            plot_freqs = freqs[mask]
-            plot_amps = amplitudes[mask]
-        else:
-            plot_freqs = freqs
-            plot_amps = amplitudes
+            mask &= freqs <= max_freq
+        plot_freqs = freqs[mask]
+        plot_amps = amplitudes[mask]
 
         ax.plot(plot_freqs, plot_amps, color="#ff6b6b", linewidth=0.9, alpha=0.9)
         ax.fill_between(plot_freqs, plot_amps, alpha=0.2, color="#ff6b6b")
 
-        if dominant_freq is not None:
+        if (
+            dominant_freq is not None
+            and len(plot_freqs) > 0
+            and plot_freqs[0] <= dominant_freq <= plot_freqs[-1]
+        ):
             # 找主頻對應振幅
             idx = np.argmin(np.abs(plot_freqs - dominant_freq))
             dom_amp = plot_amps[idx]
@@ -183,6 +191,7 @@ def plot_combined(
     freqs: np.ndarray,
     amplitudes: np.ndarray,
     title: str = "Vibration Analysis",
+    min_freq: float | None = None,
     max_freq: float = 500.0,
     dominant_freq: float | None = None,
     save_path: str | None = None,
@@ -196,6 +205,7 @@ def plot_combined(
     time_array, voltage_array : 時域資料
     freqs, amplitudes : FFT 資料
     title : 整體圖表標題
+    min_freq : FFT 顯示最小頻率
     max_freq : FFT 顯示最大頻率
     dominant_freq : 主頻標記
     save_path : 儲存路徑
@@ -217,6 +227,7 @@ def plot_combined(
         plot_fft(
             freqs, amplitudes,
             title="FFT Spectrum",
+            min_freq=min_freq,
             max_freq=max_freq,
             dominant_freq=dominant_freq,
             show=False, ax=ax2,
