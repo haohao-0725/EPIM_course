@@ -89,6 +89,23 @@ QStatusBar {{ background: {SIDEBAR}; color: {TEXT_DIM}; border-top: 1px solid {B
 QLabel#stat_val {{ font-family: Consolas; font-size: 16px; font-weight: bold; }}
 """
 
+STATUS_NORMAL_SS = f"background:{SIDEBAR}; color:{TEXT_DIM}; border-top:1px solid {BORDER};"
+STATUS_RECORDING_SS = f"background:{DANGER}; color:white; border-top:1px solid {DANGER}; font-weight:bold;"
+
+
+def make_status_callback(callback):
+    """建立可接受錄製狀態參數的狀態列 callback。"""
+    raw_callback = callback or (lambda *args: None)
+
+    def wrapped(message: str, recording: bool | None = None):
+        try:
+            raw_callback(message, recording)
+        except TypeError:
+            raw_callback(message)
+
+    return wrapped
+
+
 # ── 採集執行緒 ─────────────────────────────────
 
 class AcquisitionThread(QThread):
@@ -157,7 +174,7 @@ class AcquisitionThread(QThread):
 class LivePage(QWidget):
     def __init__(self, status_callback=None):
         super().__init__()
-        self._status = status_callback or (lambda msg: None)
+        self._status = make_status_callback(status_callback)
         self._buf_t = []
         self._buf_v_by_channel = {}
         self._record_v_by_channel = {}
@@ -361,7 +378,8 @@ class LivePage(QWidget):
         self.btn_save.setEnabled(False)
         self._status(
             f"[Live] 擷取中 | 模式: {mode} | channels: {', '.join(self._channel_order)} | "
-            f"fs: {fs} Hz | chunk: {dur} s — 按 Stop 結束"
+            f"fs: {fs} Hz | chunk: {dur} s — 按 Stop 結束",
+            True,
         )
 
     def _stop(self):
@@ -372,9 +390,9 @@ class LivePage(QWidget):
         has_data = any(self._record_v_by_channel.values())
         self.btn_save.setEnabled(has_data)
         if has_data:
-            self._status("[停止] 擷取已停止。緩衝區有資料，可按 [Save CSV] 儲存。")
+            self._status("[停止] 擷取已停止。緩衝區有資料，可按 [Save CSV] 儲存。", False)
         else:
-            self._status("[停止] 擷取已停止，無資料可儲存。")
+            self._status("[停止] 擷取已停止，無資料可儲存。", False)
 
     def _on_data(self, t, voltage_by_channel):
         # 累計總取樣點數（不受 buffer 限制）
@@ -522,7 +540,7 @@ class LivePage(QWidget):
         set_range(axis_min, axis_max, padding=0)
 
     def _on_error(self, msg: str):
-        self._status(f"[錯誤] {msg}")
+        self._status(f"[錯誤] {msg}", False)
         self._stop()
 
     def _save(self):
@@ -558,7 +576,7 @@ class LivePage(QWidget):
 class SweepPage(QWidget):
     def __init__(self, status_callback=None):
         super().__init__()
-        self._status = status_callback or (lambda msg: None)
+        self._status = make_status_callback(status_callback)
         self._buf_t = []
         self._buf_v_by_channel = {}
         self._record_v_by_channel = {}
@@ -771,7 +789,8 @@ class SweepPage(QWidget):
         self._set_inputs_enabled(False)
         self._status(
             f"[掃頻] {current_freq:g} Hz 錄製中 | 目標 {record_sec:.2f} s | "
-            f"fs: {fs} Hz | channels: {', '.join(self._channel_order)}"
+            f"fs: {fs} Hz | channels: {', '.join(self._channel_order)}",
+            True,
         )
 
     def _abort(self, show_status: bool = True):
@@ -782,7 +801,7 @@ class SweepPage(QWidget):
         self.btn_stop.setEnabled(False)
         self._set_inputs_enabled(True)
         if show_status:
-            self._status("[掃頻] 已中止目前頻率點，未自動存檔。")
+            self._status("[掃頻] 已中止目前頻率點，未自動存檔。", False)
 
     def _on_data(self, t, voltage_by_channel):
         if self._finishing or not voltage_by_channel:
@@ -858,9 +877,9 @@ class SweepPage(QWidget):
             self.lbl_file.setText(os.path.basename(filepath))
             self._append_manifest(filepath, rows)
             self._advance_frequency()
-            self._status(f"[掃頻完成] 已儲存 {os.path.basename(filepath)}，下一頻率已更新。")
+            self._status(f"[掃頻完成] 已儲存 {os.path.basename(filepath)}，下一頻率已更新。", False)
         except Exception as e:
-            self._status(f"[掃頻錯誤] 自動存檔失敗：{e}")
+            self._status(f"[掃頻錯誤] 自動存檔失敗：{e}", False)
 
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -962,7 +981,7 @@ class SweepPage(QWidget):
             self.curves_f[label] = self.plot_f.plot(pen=pg.mkPen(color, width=1.5), name=label)
 
     def _on_error(self, msg: str):
-        self._status(f"[掃頻錯誤] {msg}")
+        self._status(f"[掃頻錯誤] {msg}", False)
         self._abort(show_status=False)
 
     @staticmethod
@@ -1231,12 +1250,16 @@ class MainWindow(QMainWindow):
         root.addWidget(self.stack, stretch=1)
 
         self._sb = QStatusBar()
-        self._sb.setStyleSheet(f"background:{SIDEBAR}; color:{TEXT_DIM}; border-top:1px solid {BORDER};")
+        self._sb.setStyleSheet(STATUS_NORMAL_SS)
         self._sb.showMessage("就緒 — 請至 [即時監控] 頁面按下 Start Live View 開始擷取")
         self.setStatusBar(self._sb)
         self._cur = 0
 
-    def _set_status(self, msg: str):
+    def _set_status(self, msg: str, recording: bool | None = None):
+        if recording is True:
+            self._sb.setStyleSheet(STATUS_RECORDING_SS)
+        elif recording is False:
+            self._sb.setStyleSheet(STATUS_NORMAL_SS)
         self._sb.showMessage(msg)
 
     def _switch(self, idx: int):
