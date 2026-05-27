@@ -21,9 +21,8 @@ Thumbs.db
 # Local config (each machine has its own)
 config/local.yaml
 
-# Data files (may be large; use cloud or Git LFS for sharing)
-data/raw/
-data/processed/
+# Data files (may be large; keep all local measurement data and results out of Git)
+data/
 figures/
 reports/*.pdf
 reports/*.docx
